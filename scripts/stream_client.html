@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Stream STT test</title>
+<style>
+  body { font-family: sans-serif; padding: 1rem; max-width: 800px; }
+  textarea { width: 100%; height: 220px; }
+  .row { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; }
+  button { padding: 0.5rem 1rem; }
+  .partial { color: #777; }
+  .final { color: #111; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>Streaming STT</h1>
+<div class="row">
+  <label>WS URL: <input id="url" size="60" value="ws://127.0.0.1:8000/api/audio/stream?provider=faster_whisper&language=es"></label>
+</div>
+<div class="row">
+  <button id="start">Iniciar</button>
+  <button id="stop" disabled>Detener</button>
+  <span id="state">idle</span>
+</div>
+<h3>Eventos</h3>
+<pre id="log"></pre>
+<h3>Transcripcion final</h3>
+<textarea id="final"></textarea>
+
+<script>
+let ws, audioCtx, processor, source, stream;
+
+const $ = id => document.getElementById(id);
+const log = (m, cls) => {
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = m;
+  $("log").appendChild(div);
+};
+
+function floatTo16BitPCM(input) {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+function downsampleBuffer(buffer, sampleRate, outSampleRate) {
+  if (outSampleRate === sampleRate) return buffer;
+  const ratio = sampleRate / outSampleRate;
+  const newLen = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLen);
+  let offsetResult = 0, offsetBuffer = 0;
+  while (offsetResult < newLen) {
+    const nextOffset = Math.round((offsetResult + 1) * ratio);
+    let accum = 0, count = 0;
+    for (let i = offsetBuffer; i < nextOffset && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = accum / Math.max(count, 1);
+    offsetResult++;
+    offsetBuffer = nextOffset;
+  }
+  return result;
+}
+
+$("start").onclick = async () => {
+  $("state").textContent = "conectando";
+  ws = new WebSocket($("url").value);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = async () => {
+    $("state").textContent = "grabando";
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    source = audioCtx.createMediaStreamSource(stream);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+    processor.onaudioprocess = e => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const ds = downsampleBuffer(e.inputBuffer.getChannelData(0), audioCtx.sampleRate, 16000);
+      const pcm = floatTo16BitPCM(ds);
+      ws.send(pcm.buffer);
+    };
+    $("start").disabled = true;
+    $("stop").disabled = false;
+  };
+
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.error) {
+      log("ERROR " + msg.error);
+      return;
+    }
+    log((msg.is_final ? "FINAL " : "partial ") + msg.text, msg.is_final ? "final" : "partial");
+    if (msg.is_final && msg.text) {
+      $("final").value += (msg.text.trim() + "\n");
+    }
+  };
+
+  ws.onclose = () => {
+    $("state").textContent = "cerrado";
+    $("start").disabled = false;
+    $("stop").disabled = true;
+  };
+};
+
+$("stop").onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send("__end__");
+    ws.close();
+  }
+  if (processor) processor.disconnect();
+  if (source) source.disconnect();
+  if (audioCtx) audioCtx.close();
+  if (stream) stream.getTracks().forEach(t => t.stop());
+};
+</script>
+</body>
+</html>
