@@ -407,7 +407,7 @@ app/
   data/       cuestionario y reglas clinicas
   models/     contratos Pydantic
   services/   extraccion, audio, grafo, riesgos, persistencia, audit
-docs/         contratos, ADR, RGPD, perfiles, planes
+docs/         contratos, ADR, RGPD, perfiles y estado
 frontend-demo/ demo Next.js
 scripts/      setup, smoke tests, auditoria, benchmarks
 tests/        pruebas y golden set
