@@ -1,0 +1,23 @@
+id: habitos_005_no_recuerda
+module: history
+section: HABITOS
+transcript: |
+  No fuma actualmente, pero no recuerda si fumo anteriormente.
+  Niega alcohol y drogas.
+labels:
+  uncertainty:
+    - text: "no recuerda si fumo anteriormente"
+      scope: "fumado anteriormente"
+expected_suggestions:
+  - question_id: C5-1
+    selected_codes: ["C5-12"]
+    evidence_contains: "No fuma actualmente"
+  - question_id: C5-2
+    selected_codes: ["C5-22"]
+    evidence_contains: "Niega alcohol"
+  - question_id: C5-3
+    selected_codes: ["C5-32"]
+    evidence_contains: "drogas"
+expected_graph_path: ["C5-1", "C5-121", "C5-2", "C5-221", "C5-3", "C5-321"]
+expected_missing: ["C5-121", "C5-221", "C5-321"]
+forbidden_codes: ["C5-1211", "C5-1212"]

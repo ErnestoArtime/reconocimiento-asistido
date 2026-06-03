@@ -1,0 +1,28 @@
+id: habitos_001_nunca_fumo
+module: history
+section: HABITOS
+transcript: |
+  El paciente no fuma actualmente y nunca ha fumado. No consume alcohol.
+  Niega consumo de drogas.
+labels:
+  negation:
+    - text: "no fuma actualmente"
+      temporality: present
+    - text: "nunca ha fumado"
+      temporality: historical
+expected_suggestions:
+  - question_id: C5-1
+    selected_codes: ["C5-12"]
+    evidence_contains: "no fuma"
+  - question_id: C5-121
+    selected_codes: ["C5-1212"]
+    evidence_contains: "nunca ha fumado"
+  - question_id: C5-2
+    selected_codes: ["C5-22"]
+    evidence_contains: "no consume alcohol"
+  - question_id: C5-3
+    selected_codes: ["C5-32"]
+    evidence_contains: "niega consumo de drogas"
+expected_graph_path: ["C5-1", "C5-121", "C5-2", "C5-221", "C5-3", "C5-321"]
+expected_missing: ["C5-221", "C5-321"]
+forbidden_codes: ["C5-11", "C5-1211", "C5-21", "C5-31"]

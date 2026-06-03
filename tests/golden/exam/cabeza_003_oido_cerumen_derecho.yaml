@@ -1,0 +1,24 @@
+id: exam_cabeza_003_oido_cerumen_derecho
+module: exam
+section: CABEZA
+transcript: |
+  La boca esta normal. El oido no es normal por tapon de cerumen derecho.
+  Ojos normales y nariz normal.
+expected_suggestions:
+  - question_id: E1-3
+    selected_codes: ["E1-31"]
+    evidence_contains: "boca esta normal"
+  - question_id: E1-4
+    selected_codes: ["E1-42"]
+    evidence_contains: "oido no es normal"
+  - question_id: E1-421
+    selected_codes: ["E1-4227"]
+    evidence_contains: "cerumen derecho"
+  - question_id: E1-5
+    selected_codes: ["E1-51"]
+    evidence_contains: "ojos normales"
+  - question_id: E1-6
+    selected_codes: ["E1-61"]
+    evidence_contains: "nariz normal"
+expected_graph_path: ["E1-1", "E1-2", "E1-3", "E1-4", "E1-421", "E1-5", "E1-6"]
+expected_missing: ["E1-1", "E1-2"]

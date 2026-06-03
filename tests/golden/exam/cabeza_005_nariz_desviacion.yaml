@@ -1,0 +1,30 @@
+id: exam_cabeza_005_nariz_desviacion
+module: exam
+section: CABEZA
+transcript: |
+  Cuero cabelludo, cara, boca, oidos y ojos sin alteraciones.
+  Nariz no normal por desviacion de tabique nasal.
+expected_suggestions:
+  - question_id: E1-1
+    selected_codes: ["E1-11"]
+    evidence_contains: "Cuero cabelludo"
+  - question_id: E1-2
+    selected_codes: ["E1-21"]
+    evidence_contains: "cara"
+  - question_id: E1-3
+    selected_codes: ["E1-31"]
+    evidence_contains: "boca"
+  - question_id: E1-4
+    selected_codes: ["E1-41"]
+    evidence_contains: "oidos"
+  - question_id: E1-5
+    selected_codes: ["E1-51"]
+    evidence_contains: "ojos sin alteraciones"
+  - question_id: E1-6
+    selected_codes: ["E1-62"]
+    evidence_contains: "nariz no normal"
+  - question_id: E1-621
+    selected_codes: ["E1-6213"]
+    evidence_contains: "desviacion de tabique nasal"
+expected_graph_path: ["E1-1", "E1-2", "E1-3", "E1-4", "E1-5", "E1-6", "E1-621"]
+expected_missing: []

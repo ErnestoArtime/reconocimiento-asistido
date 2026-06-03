@@ -1,0 +1,27 @@
+id: habitos_003_fuma_actual
+module: history
+section: HABITOS
+transcript: |
+  El paciente fuma actualmente unos seis a diez cigarrillos al dia.
+  No consume bebidas alcoholicas ni otros estupefacientes.
+labels:
+  negation:
+    - text: "No consume bebidas alcoholicas"
+      temporality: present
+    - text: "ni otros estupefacientes"
+      temporality: present
+expected_suggestions:
+  - question_id: C5-1
+    selected_codes: ["C5-11"]
+    evidence_contains: "fuma actualmente"
+  - question_id: C5-131
+    selected_codes: ["C5-1313"]
+    evidence_contains: "seis a diez"
+  - question_id: C5-2
+    selected_codes: ["C5-22"]
+    evidence_contains: "No consume bebidas alcoholicas"
+  - question_id: C5-3
+    selected_codes: ["C5-32"]
+    evidence_contains: "ni otros estupefacientes"
+expected_graph_path: ["C5-1", "C5-131", "C5-2", "C5-221", "C5-3", "C5-321"]
+expected_missing: ["C5-221", "C5-321"]

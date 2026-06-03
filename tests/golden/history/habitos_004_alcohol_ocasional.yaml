@@ -1,0 +1,32 @@
+id: habitos_004_alcohol_ocasional
+module: history
+section: HABITOS
+transcript: |
+  No fuma y nunca ha fumado. Consume bebidas alcoholicas de vez en cuando.
+  No consume drogas.
+labels:
+  negation:
+    - text: "No fuma"
+      temporality: present
+    - text: "nunca ha fumado"
+      temporality: historical
+    - text: "No consume drogas"
+      temporality: present
+expected_suggestions:
+  - question_id: C5-1
+    selected_codes: ["C5-12"]
+    evidence_contains: "No fuma"
+  - question_id: C5-121
+    selected_codes: ["C5-1212"]
+    evidence_contains: "nunca ha fumado"
+  - question_id: C5-2
+    selected_codes: ["C5-21"]
+    evidence_contains: "Consume bebidas alcoholicas"
+  - question_id: C5-231
+    selected_codes: ["C5-2311"]
+    evidence_contains: "de vez en cuando"
+  - question_id: C5-3
+    selected_codes: ["C5-32"]
+    evidence_contains: "No consume drogas"
+expected_graph_path: ["C5-1", "C5-121", "C5-2", "C5-231", "C5-3", "C5-321"]
+expected_missing: ["C5-321"]

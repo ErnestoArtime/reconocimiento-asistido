@@ -1,0 +1,30 @@
+id: exam_cabeza_002_boca_caries
+module: exam
+section: CABEZA
+transcript: |
+  Cuero cabelludo normal. Cara normal. La boca no es normal,
+  presenta caries multiples. Oidos normales. Ojos normales. Nariz normal.
+expected_suggestions:
+  - question_id: E1-1
+    selected_codes: ["E1-11"]
+    evidence_contains: "cuero cabelludo normal"
+  - question_id: E1-2
+    selected_codes: ["E1-21"]
+    evidence_contains: "cara normal"
+  - question_id: E1-3
+    selected_codes: ["E1-32"]
+    evidence_contains: "boca no es normal"
+  - question_id: E1-321
+    selected_codes: ["E1-3211"]
+    evidence_contains: "caries"
+  - question_id: E1-4
+    selected_codes: ["E1-41"]
+    evidence_contains: "Oidos normales"
+  - question_id: E1-5
+    selected_codes: ["E1-51"]
+    evidence_contains: "Ojos normales"
+  - question_id: E1-6
+    selected_codes: ["E1-61"]
+    evidence_contains: "Nariz normal"
+expected_graph_path: ["E1-1", "E1-2", "E1-3", "E1-321", "E1-4", "E1-5", "E1-6"]
+expected_missing: []

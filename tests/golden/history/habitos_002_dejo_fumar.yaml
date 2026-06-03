@@ -1,0 +1,28 @@
+id: habitos_002_dejo_fumar
+module: history
+section: HABITOS
+transcript: |
+  No fuma actualmente. Si fumaba antes, dejo de fumar hace tres anos.
+  No consume alcohol ni drogas.
+labels:
+  negation:
+    - text: "No fuma actualmente"
+      temporality: present
+    - text: "dejo de fumar"
+      temporality: historical
+expected_suggestions:
+  - question_id: C5-1
+    selected_codes: ["C5-12"]
+    evidence_contains: "No fuma actualmente"
+  - question_id: C5-121
+    selected_codes: ["C5-1211"]
+    evidence_contains: "fumaba antes"
+  - question_id: C5-2
+    selected_codes: ["C5-22"]
+    evidence_contains: "No consume alcohol"
+  - question_id: C5-3
+    selected_codes: ["C5-32"]
+    evidence_contains: "ni drogas"
+expected_graph_path: ["C5-1", "C5-121", "C5-2", "C5-221", "C5-3", "C5-321"]
+expected_missing: ["C5-221", "C5-321"]
+forbidden_codes: ["C5-11", "C5-21", "C5-31"]

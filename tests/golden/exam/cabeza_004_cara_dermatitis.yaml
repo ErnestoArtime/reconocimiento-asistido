@@ -1,0 +1,30 @@
+id: exam_cabeza_004_cara_dermatitis
+module: exam
+section: CABEZA
+transcript: |
+  Cuero cabelludo normal. La cara no es normal, se observa dermatitis seborreica.
+  Boca, oidos, ojos y nariz normales.
+expected_suggestions:
+  - question_id: E1-1
+    selected_codes: ["E1-11"]
+    evidence_contains: "cuero cabelludo normal"
+  - question_id: E1-2
+    selected_codes: ["E1-22"]
+    evidence_contains: "cara no es normal"
+  - question_id: E1-221
+    selected_codes: ["E1-2212"]
+    evidence_contains: "dermatitis seborreica"
+  - question_id: E1-3
+    selected_codes: ["E1-31"]
+    evidence_contains: "Boca"
+  - question_id: E1-4
+    selected_codes: ["E1-41"]
+    evidence_contains: "oidos"
+  - question_id: E1-5
+    selected_codes: ["E1-51"]
+    evidence_contains: "ojos"
+  - question_id: E1-6
+    selected_codes: ["E1-61"]
+    evidence_contains: "nariz normales"
+expected_graph_path: ["E1-1", "E1-2", "E1-221", "E1-3", "E1-4", "E1-5", "E1-6"]
+expected_missing: []
