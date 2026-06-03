@@ -1,0 +1,35 @@
+# Stack audio - instalar aparte de requirements.txt
+# pip install -r requirements-audio.txt
+
+# Transcripcion local (sprint 1)
+faster-whisper>=1.0.3
+ctranslate2>=4.4
+av>=12.0.0
+soundfile>=0.12.1
+numpy>=1.26
+
+# Uploads multipart en FastAPI
+python-multipart>=0.0.9
+
+# VAD ligero (sprint 1 opcional, sprint 4 obligatorio para streaming)
+webrtcvad-wheels>=2.0.14
+
+# Metricas (benchmark script)
+jiwer>=3.0.4
+
+# --- Diarizacion (sprint 5 / Hito 8) ---
+# IMPORTANTE: torch/whisperx/pyannote SOLO resuelven con Python 3.11.
+# Verificar version del venv antes de instalar.
+# Si solo necesitas faster-whisper sin diarizacion, comenta estas 3 lineas.
+whisperx>=3.1.5
+pyannote.audio>=3.1
+# Para CPU: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Para CUDA 12.1: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+torch>=2.2
+torchaudio>=2.2
+
+# --- Providers online (descomentar el que uses) ---
+# openai>=1.50
+# azure-cognitiveservices-speech>=1.40
+# deepgram-sdk>=3.7
+# google-cloud-speech>=2.27
