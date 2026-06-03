@@ -1,0 +1,67 @@
+# =============================================================================
+# Variante GPU (CUDA) para faster-whisper / whisperx con NVIDIA.
+# Requiere NVIDIA Container Toolkit en el host (Linux nativo o WSL2 con CUDA).
+# Build: docker build -f Dockerfile.gpu -t reco-asistido:gpu .
+# Run:   docker run --gpus all --env-file .env -p 8000:8000 reco-asistido:gpu
+# =============================================================================
+
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    APP_HOME=/app \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    HF_HOME=/models/huggingface \
+    XDG_CACHE_HOME=/models/cache \
+    AUDIO_CACHE_DIR=/app/.cache/audio \
+    AUDIO_DEVICE=cuda \
+    AUDIO_COMPUTE_TYPE=float16 \
+    FFMPEG_PATH=/usr/bin/ffmpeg \
+    FFPROBE_PATH=/usr/bin/ffprobe
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+        curl \
+        ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3.11-venv \
+        ffmpeg \
+        libsndfile1 \
+        libsndfile1-dev \
+        gcc \
+        g++ \
+        cmake \
+        pkg-config \
+        build-essential \
+    && python3.11 -m venv ${VIRTUAL_ENV} \
+    && ${VIRTUAL_ENV}/bin/python -m pip install --upgrade pip setuptools wheel \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system app && useradd --system --gid app --home ${APP_HOME} app
+
+WORKDIR ${APP_HOME}
+
+COPY requirements.txt requirements-audio.txt ./
+RUN pip install --no-cache-dir \
+        -r requirements.txt \
+        -r requirements-audio.txt
+
+COPY app ./app
+COPY scripts ./scripts
+
+RUN mkdir -p /models/huggingface /models/cache ${APP_HOME}/.cache/audio \
+    && chown -R app:app ${APP_HOME} /models
+
+USER app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

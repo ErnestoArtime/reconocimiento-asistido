@@ -1,0 +1,106 @@
+# Mantener imagen ligera. Excluir todo lo que el build no necesita.
+
+# VCS
+.git/
+.gitignore
+.gitattributes
+
+# Entornos locales / IDE / agentes
+.venv/
+.venv*/
+venv/
+env/
+.python-version
+.vscode/
+.idea/
+.history/
+.fleet/
+.claude/
+.playwright-mcp/
+.mcp/
+
+# Caches Python / linters
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.pytype/
+.tox/
+.nox/
+.coverage*
+htmlcov/
+
+# Secretos (se inyectan via --env-file en runtime)
+.env
+.env.*
+!.env.example
+
+# Logs y temporales
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+=*
+audit.log.jsonl
+audit-*.jsonl
+audit-*.jsonl.enc
+
+# Caches del pipeline (volumenes en runtime)
+.cache/
+.sixth/
+audio_benchmark_results.md
+*.bench.md
+
+# Modelos pesados (volumenes en runtime)
+models/
+*.gguf
+*.bin
+*.safetensors
+*.ct2
+*.pt
+*.pth
+*.onnx
+hf_cache/
+
+# Persistencia local
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# Audio binarios y screenshots
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.ogg
+*.flac
+*.aac
+*.opus
+uploads/
+test_*.wav
+test_*.mp3
+frontend-demo-*.png
+screenshot*.png
+*.screenshot.png
+
+# Docs y carpetas no necesarias en imagen
+docs/
+tests/
+README.md
+*.md
+!requirements*.txt
+
+# SO
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Frontend separado (si se sirve aparte)
+frontend-demo/

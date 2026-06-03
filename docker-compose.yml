@@ -1,0 +1,87 @@
+# =============================================================================
+# Stack de despliegue local con Docker Compose.
+#
+# Servicios:
+#   - api:      backend FastAPI (CPU). Para GPU usar docker-compose.gpu.yml.
+#   - frontend: demo web Next.js en http://localhost:3010.
+#
+# Uso:
+#   cp .env.example .env   # ajustar valores
+#   docker compose up -d --build
+#   docker compose logs -f api frontend
+#
+# Ollama NO se levanta dentro de Docker. Si quieres usar Ollama instalado en el
+# host, configura en .env:
+#   OLLAMA_BASE_URL=http://host.docker.internal:11434
+# =============================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: reco-asistido:cpu
+    container_name: reco-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AUDIO_CACHE_DIR: /app/.cache/audio
+      PERSISTENCE_DB_PATH: /app/var/reconocimiento.db
+      AUDIT_LOG_PATH: /app/var/audit.log.jsonl
+    ports:
+      - "8000:8000"
+    volumes:
+      # Modelos faster-whisper / HF cache persistentes (no se re-descargan)
+      - hf_models:/models/huggingface
+      - hf_cache:/models/cache
+      # Cache de transcripciones
+      - audio_cache:/app/.cache/audio
+      # Estado local opcional: SQLite + audit log. No pisa app/data/json_IA.json.
+      - app_state:/app/var
+      # Uploads opcionales (montaje local para inspeccionar)
+      - ./uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend-demo
+      dockerfile: Dockerfile
+      args:
+        # Esta URL se inyecta en el bundle del navegador. Debe ser accesible
+        # desde el host donde abres la demo, no solo desde la red Docker.
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://127.0.0.1:8000}
+    image: reco-asistido-frontend:latest
+    container_name: reco-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://127.0.0.1:8000}
+    ports:
+      - "3010:3010"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3010').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  hf_models:
+  hf_cache:
+  audio_cache:
+  app_state:

@@ -1,0 +1,27 @@
+# =============================================================================
+# Override GPU: usa Dockerfile.gpu y expone GPUs NVIDIA al contenedor API.
+#
+# Requisitos:
+#   - Host con drivers NVIDIA + NVIDIA Container Toolkit.
+#   - En Windows: WSL2 con CUDA y Docker Desktop con WSL backend.
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# =============================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: reco-asistido:gpu
+    environment:
+      AUDIO_DEVICE: cuda
+      AUDIO_COMPUTE_TYPE: float16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

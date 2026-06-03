@@ -1,0 +1,188 @@
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+pip-wheel-metadata/
+share/python-wheels/
+
+# Virtualenvs
+.venv/
+.venv*/
+venv/
+env/
+ENV/
+.python-version
+
+# Type checkers / linters / formatters caches
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.pytype/
+
+# Testing
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# =============================================================================
+# Secrets / configuracion local
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+.secrets/
+
+# =============================================================================
+# Logs y temporales
+# =============================================================================
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+*~
+=*/
+=*
+
+# Logs especificos del proyecto
+uvicorn.*.log
+uvicorn.err.log
+uvicorn.out.log
+ollama_pull.log
+hf_download.log
+audit.log.jsonl
+audit-*.jsonl
+audit-*.jsonl.enc
+
+# =============================================================================
+# Cache del pipeline (audio, benchmark, hf, etc.)
+# =============================================================================
+.cache/
+.cache_audio/
+.cache_benchmark/
+audio_benchmark_results.md
+*.bench.md
+.sixth/
+
+# =============================================================================
+# Modelos descargados pesados (Whisper, Llama, GGUF, CTranslate2)
+# =============================================================================
+models/
+*.gguf
+*.bin
+*.safetensors
+*.ct2
+*.pt
+*.pth
+*.onnx
+hf_cache/
+.huggingface/
+ctranslate2_models/
+
+# =============================================================================
+# Datos locales / persistencia
+# =============================================================================
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# =============================================================================
+# Audio de prueba pesado (mantener gold .txt en repo si conviene)
+# =============================================================================
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.ogg
+*.flac
+*.aac
+*.opus
+uploads/
+tests/audio_samples/*.wav
+tests/audio_samples/*.mp3
+tests/audio_samples/*.m4a
+
+# Test fixtures sueltos en root
+test_*.wav
+test_*.mp3
+test_body.json
+
+# =============================================================================
+# Capturas / screenshots ad-hoc
+# =============================================================================
+frontend-demo-*.png
+screenshot*.png
+*.screenshot.png
+
+# =============================================================================
+# IDE / editor
+# =============================================================================
+.vscode/
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+.history/
+.fleet/
+
+# =============================================================================
+# Sistema operativo
+# =============================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# =============================================================================
+# Herramientas externas / agentes
+# =============================================================================
+.claude/
+.playwright-mcp/
+playwright-report/
+test-results/
+.mcp/
+
+# =============================================================================
+# Frontend demo
+# =============================================================================
+frontend-demo/node_modules/
+frontend-demo/.next/
+frontend-demo/out/
+frontend-demo/build/
+frontend-demo/dist/
+frontend-demo/.env
+frontend-demo/.env*.local
+frontend-demo/*.log
+frontend-demo/tsconfig.tsbuildinfo
+frontend-demo/coverage/
+frontend-demo/playwright-report/
+frontend-demo/test-results/
