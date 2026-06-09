@@ -88,7 +88,6 @@ audio_benchmark_results.md
 # =============================================================================
 # Modelos descargados pesados (Whisper, Llama, GGUF, CTranslate2)
 # =============================================================================
-models/
 *.gguf
 *.bin
 *.safetensors
@@ -179,6 +178,7 @@ frontend-demo/.next/
 frontend-demo/out/
 frontend-demo/build/
 frontend-demo/dist/
+frontend-demo/public/wasm/
 frontend-demo/.env
 frontend-demo/.env*.local
 frontend-demo/*.log
@@ -186,3 +186,4 @@ frontend-demo/tsconfig.tsbuildinfo
 frontend-demo/coverage/
 frontend-demo/playwright-report/
 frontend-demo/test-results/
+frontend-demo/models/
