@@ -186,4 +186,4 @@ frontend-demo/tsconfig.tsbuildinfo
 frontend-demo/coverage/
 frontend-demo/playwright-report/
 frontend-demo/test-results/
-frontend-demo/models/
+frontend-demo/public/models/

@@ -29,7 +29,7 @@ echo   Reconocimiento Asistido - Menu
 echo ============================================================
 echo   Root: %ROOT%
 echo.
-echo   --- Servicios ---
+echo   --- Servicios locales ---
 echo   1. Lanzar BACKEND  (uvicorn :%BACKEND_PORT%)
 echo   2. Lanzar FRONTEND (Next.js :%FRONTEND_PORT%)
 echo   3. Lanzar AMBOS (consolas separadas)
@@ -60,6 +60,21 @@ echo  19. Snapshot baseline (.env + smoke + paquetes)
 echo  20. Cambiar DEPLOYMENT_PROFILE (demo/prototype_local/production)
 echo  21. Validar contrato v1 endpoint (curl POST)
 echo.
+echo   --- Docker Compose ---
+echo  22. Docker UP backend + frontend
+echo  23. Docker DOWN
+echo  24. Docker PS
+echo  25. Docker logs API + frontend
+echo  26. Docker rebuild API
+echo  27. Docker rebuild frontend
+echo  28. Docker rebuild TODO
+echo  29. Docker health API
+echo  30. Docker shell API
+echo.
+echo   --- Cloudflare ---
+echo  31. Smoke test Cloudflare Workers AI (.env)
+echo  32. Listar providers IA via API
+echo.
 echo   0. Salir
 echo ============================================================
 set /p "OPT=Opcion: "
@@ -85,6 +100,17 @@ if "%OPT%"=="18" goto OPT_GOLDEN_EVAL
 if "%OPT%"=="19" goto OPT_BASELINE
 if "%OPT%"=="20" goto OPT_PROFILE_SWITCH
 if "%OPT%"=="21" goto OPT_TEST_V1
+if "%OPT%"=="22" goto OPT_DOCKER_UP
+if "%OPT%"=="23" goto OPT_DOCKER_DOWN
+if "%OPT%"=="24" goto OPT_DOCKER_PS
+if "%OPT%"=="25" goto OPT_DOCKER_LOGS
+if "%OPT%"=="26" goto OPT_DOCKER_REBUILD_API
+if "%OPT%"=="27" goto OPT_DOCKER_REBUILD_FRONT
+if "%OPT%"=="28" goto OPT_DOCKER_REBUILD_ALL
+if "%OPT%"=="29" goto OPT_DOCKER_HEALTH
+if "%OPT%"=="30" goto OPT_DOCKER_SHELL_API
+if "%OPT%"=="31" goto OPT_CLOUDFLARE_SMOKE
+if "%OPT%"=="32" goto OPT_IA_PROVIDERS
 if "%OPT%"=="0"  goto END
 goto MENU
 
@@ -386,6 +412,135 @@ echo POST /api/v1/ia/extract-from-text
 curl.exe -s -X POST http://127.0.0.1:%BACKEND_PORT%/api/v1/ia/extract-from-text ^
     -H "Content-Type: application/json" ^
     -d "{\"module\":\"%MODULE%\",\"section\":\"%SECTION%\",\"text\":\"%TEXT%\"}"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_UP
+echo.
+echo === Docker Compose UP ===
+cmd /d /s /c "docker compose up -d"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Docker Compose UP fallo.
+    echo Revisa que Docker Desktop este iniciado y que los puertos esten libres.
+    echo.
+    pause
+    goto MENU
+)
+echo.
+cmd /d /s /c "docker compose ps"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_DOWN
+echo.
+echo === Docker Compose DOWN ===
+cmd /d /s /c "docker compose down"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_PS
+echo.
+echo === Docker Compose PS ===
+cmd /d /s /c "docker compose ps"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_LOGS
+echo.
+echo === Docker logs API + frontend ===
+echo Ctrl+C para salir de logs.
+cmd /d /s /c "docker compose logs -f api frontend"
+goto MENU
+
+
+:OPT_DOCKER_REBUILD_API
+echo.
+echo === Docker rebuild API ===
+cmd /d /s /c "docker compose build api"
+if errorlevel 1 (
+    echo [ERROR] Build API fallo.
+    pause
+    goto MENU
+)
+cmd /d /s /c "docker compose up -d api"
+cmd /d /s /c "docker compose ps"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_REBUILD_FRONT
+echo.
+echo === Docker rebuild frontend ===
+cmd /d /s /c "docker compose build frontend"
+if errorlevel 1 (
+    echo [ERROR] Build frontend fallo.
+    pause
+    goto MENU
+)
+cmd /d /s /c "docker compose up -d frontend"
+cmd /d /s /c "docker compose ps"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_REBUILD_ALL
+echo.
+echo === Docker rebuild TODO ===
+cmd /d /s /c "docker compose up -d --build"
+cmd /d /s /c "docker compose ps"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_HEALTH
+echo.
+echo === Docker API health ===
+curl.exe -s -m 5 http://127.0.0.1:%BACKEND_PORT%/health
+echo.
+echo.
+cmd /d /s /c "docker compose ps"
+echo.
+pause
+goto MENU
+
+
+:OPT_DOCKER_SHELL_API
+echo.
+echo === Shell API container ===
+cmd /d /s /c "docker compose exec api sh"
+goto MENU
+
+
+:OPT_CLOUDFLARE_SMOKE
+echo.
+echo === Smoke test Cloudflare Workers AI ===
+if not exist "%VENV%" (
+    echo [ERROR] No existe %VENV%
+    pause
+    goto MENU
+)
+"%VENV%" "%ROOT%\scripts\cloudflare_smoke_test.py"
+echo.
+pause
+goto MENU
+
+
+:OPT_IA_PROVIDERS
+echo.
+echo === IA providers via API ===
+curl.exe -s -m 10 http://127.0.0.1:%BACKEND_PORT%/api/ia/providers
 echo.
 pause
 goto MENU
