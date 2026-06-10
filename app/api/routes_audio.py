@@ -390,17 +390,34 @@ async def stream(websocket: WebSocket) -> None:
       1. connect ws://host/api/audio/stream?provider=faster_whisper&language=es
       2. envia bytes PCM s16le mono 16kHz (frames de 20-100 ms).
       3. recibe JSON {"text", "is_final", "start", "end"}.
-      4. cierra cuando termina.
+      4. envia "__end__" cuando termina de grabar.
+      5. recibe JSON {"done": true} cuando el servidor termino de procesar.
+      6. cierra el socket.
     """
     await websocket.accept()
     settings = get_settings()
     qs = websocket.query_params
-    provider_name = qs.get("provider") or settings.audio_stream_provider or settings.audio_provider
+    requested_provider = qs.get("provider")
+    provider_name = settings.audio_stream_provider or requested_provider or settings.audio_provider
     language = qs.get("language") or settings.audio_language
 
+    logger.info("[stream] cliente conectado provider=%s lang=%s", provider_name, language)
+
     try:
+        if (
+            requested_provider
+            and not settings.audio_stream_provider
+        ):
+            requested = get_provider(requested_provider)
+            if not requested.supports_streaming:
+                logger.info(
+                    "[stream] provider %s no soporta streaming nativo; usando provider dedicado",
+                    requested_provider,
+                )
+                provider_name = settings.audio_stream_provider or settings.audio_provider
         provider = get_streaming_provider(provider_name)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("[stream] provider init failed: %s", exc)
         await websocket.send_json({"error": f"provider invalido: {exc}"})
         await websocket.close()
         return
@@ -434,6 +451,7 @@ async def stream(websocket: WebSocket) -> None:
                 if data is None:
                     text = msg.get("text")
                     if text == "__end__":
+                        logger.info("[stream] received __end__ from client")
                         break
                     continue
                 yield data
@@ -451,9 +469,14 @@ async def stream(websocket: WebSocket) -> None:
                     "provider": provider_name,
                 }
             )
+        # Signal client that server finished flushing.
+        await websocket.send_json({"done": True})
+        logger.info("[stream] done sent to client")
     except WebSocketDisconnect:
+        logger.info("[stream] client disconnected during processing")
         return
     except Exception as exc:  # noqa: BLE001
+        logger.exception("[stream] error: %s", exc)
         try:
             await websocket.send_json({"error": str(exc)})
         except Exception:  # noqa: BLE001

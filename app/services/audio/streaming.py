@@ -125,6 +125,11 @@ class StreamingTranscriber:
     async def _transcribe_buffer(self, is_final: bool) -> PartialTranscript | None:
         if not self._buffer:
             return None
+        buf_dur = self._segment_duration_s()
+        logger.info(
+            "[stream] transcribing buffer: %.2fs %d bytes is_final=%s",
+            buf_dur, len(self._buffer), is_final,
+        )
         with tempfile.TemporaryDirectory(prefix="reco_stream_") as tmp:
             wav_path = Path(tmp) / "chunk.wav"
             _write_wav(wav_path, bytes(self._buffer))
@@ -137,10 +142,12 @@ class StreamingTranscriber:
                     False,
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.exception("Streaming transcribe fallo: %s", exc)
+                logger.exception("[stream] transcribe failed: %s", exc)
                 return None
+        text = result.text.strip() if result.text else ""
+        logger.info("[stream] transcribe result: %d chars final=%s", len(text), is_final)
         return PartialTranscript(
-            text=result.text,
+            text=text,
             is_final=is_final,
             start=self._segment_started_at,
             end=self._segment_started_at + self._segment_duration_s(),
@@ -156,6 +163,7 @@ class StreamingTranscriber:
         chunk_count = 0
         bytes_total = 0
         last_log = time.time()
+        logger.info("[stream] consume started, waiting for chunks...")
 
         async for chunk in chunks:
             if not chunk:
@@ -215,7 +223,12 @@ class StreamingTranscriber:
 
         # Flush al cerrar
         if self._buffer:
+            logger.info(
+                "[stream] flushing %d bytes (%.2fs) at end of stream",
+                len(self._buffer), self._segment_duration_s(),
+            )
             final = await self._transcribe_buffer(is_final=True)
             if final:
                 yield final
             self._buffer.clear()
+        logger.info("[stream] consume finished, total chunks=%d bytes=%d", chunk_count, bytes_total)
