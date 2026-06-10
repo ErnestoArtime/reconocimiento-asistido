@@ -18,7 +18,7 @@ from app.models.suggestion import AiSuggestion
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = (
+BASE_SYSTEM_PROMPT = (
     "Eres un extractor de datos clinicos en espanol. "
     "Recibes una transcripcion de una entrevista o exploracion medica y un conjunto "
     "de preguntas con sus codigos permitidos.\n"
@@ -41,8 +41,6 @@ SYSTEM_PROMPT = (
     "encontrarse como subcadena literal del texto. NO la parafrasees, NO la traduzcas, "
     "NO corrijas tildes ni puntuacion. Si no puedes copiar un fragmento literal que "
     "soporte la respuesta, no incluyas la pregunta.\n"
-    "- evidence: copia SOLO las palabras del PACIENTE (su respuesta). NUNCA "
-    "incluyas la pregunta del entrevistador/medico en la evidencia.\n"
     "- No respondas 'Si'/'No' por defecto: solo si el paciente lo afirma o niega "
     "explicitamente para ESA pregunta. Si no aborda el tema, omite la pregunta.\n"
     "- question_id: usa EXACTAMENTE el id de la pregunta a la que responde la evidencia. "
@@ -69,6 +67,31 @@ SYSTEM_PROMPT = (
 )
 
 
+def build_system_prompt(module: str) -> str:
+    """Prompt de extraccion con reglas de evidencia dependientes del modulo."""
+    normalized = (module or "").strip().lower()
+    if normalized == "exam":
+        evidence_rules = (
+            "\nReglas de hablante/evidencia por modulo:\n"
+            "- En exploracion fisica, la evidencia clinica suele ser dictada por el MEDICO.\n"
+            "- Para module=exam, evidence puede copiar palabras del medico cuando describen hallazgos.\n"
+            "- No exijas palabras del paciente en exploracion fisica.\n"
+            "- Si hay turnos con hablante, usa el hablante como contexto, pero la cita debe ser literal del transcript.\n"
+        )
+    else:
+        evidence_rules = (
+            "\nReglas de hablante/evidencia por modulo:\n"
+            "- En historia clinica, el medico aporta contexto y el PACIENTE aporta la evidencia principal.\n"
+            "- Para module=history, evidence debe copiar la respuesta del paciente siempre que haya turnos.\n"
+            "- Puedes usar la pregunta del medico para entender a que campo responde un 'si' o 'no', pero no la uses como unica evidencia.\n"
+            "- Si no hay etiquetas de hablante, usa solo citas literales del transcript con soporte clinico claro.\n"
+        )
+    return BASE_SYSTEM_PROMPT + evidence_rules
+
+
+SYSTEM_PROMPT = build_system_prompt("history")
+
+
 SUMMARY_SYSTEM_PROMPT = (
     "Eres un asistente clinico. Resume en espanol la transcripcion de una "
     "entrevista o exploracion medica, en secciones cortas.\n"
@@ -84,12 +107,20 @@ SUMMARY_SYSTEM_PROMPT = (
 
 
 def _compact_question(question: dict[str, Any]) -> dict[str, Any]:
-    return {
+    compact = {
         "id": question.get("id"),
+        "section": question.get("section"),
         "text": question.get("text"),
+        "context": question.get("ai_context"),
+        "parent_question_id": question.get("parent_question_id"),
+        "parent_question": question.get("parent_question"),
+        "required_parent_codes": question.get("required_parent_codes", []),
+        "subject": question.get("subject"),
+        "temporal_scope": question.get("temporal_scope"),
         "question_type": question.get("question_type"),
         "codes": question.get("codes", {}),
     }
+    return {key: value for key, value in compact.items() if value not in (None, [], {})}
 
 
 def build_extraction_schema(questions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -356,7 +387,7 @@ class CloudflareProvider:
         )
         content = self._run(
             [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": build_system_prompt(module)},
                 {"role": "user", "content": user_prompt},
             ],
             json_mode=True,
@@ -489,7 +520,7 @@ class OllamaProvider:
             text, module, section, questions, clinical_context
         )
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": build_system_prompt(module)},
             {"role": "user", "content": user_prompt},
         ]
         fmt = self._resolve_format(questions)

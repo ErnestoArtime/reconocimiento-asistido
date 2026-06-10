@@ -1,34 +1,39 @@
 from __future__ import annotations
 
+import re
+
 from app.models.extraction_contract import SpeakerRole, SuggestionV1, TranscriptionMetaV1
 from app.models.legacy_adapter import _coerce_speaker
 from app.services.audio.base import Segment, TranscriptResult
 from app.services.audio.evidence_alignment import align_evidence_to_segments
 
 
-# Hablante cuyo discurso es la fuente clinica por modulo. En history responde el
-# paciente; en exam el medico describe los hallazgos.
+# Hablante cuyo discurso es la fuente clinica por modulo cuando el rol esta
+# identificado explicitamente. Los clusters SPEAKER_00/01 no se consideran rol.
 EXPECTED_SPEAKER_BY_MODULE = {"history": "paciente", "exam": "medico"}
 
 
+def _strip_turn_prefix(text: str) -> str:
+    return re.sub(r"^\s*\[[^\]]+\]\s*", "", text or "").strip()
+
+
 def extraction_text_for_module(transcription: TranscriptResult, module: str) -> str:
-    """Texto a extraer. Si hay diarizacion, devuelve solo los turnos del hablante
-    esperado del modulo (paciente en history, medico en exam). Sin diarizacion o
-    si el filtro queda vacio, devuelve el transcript completo (fallback seguro).
+    """Texto a extraer preservando contexto conversacional.
+
+    Si hay segmentos con speaker, devuelve todos los turnos con prefijo de
+    hablante. Esto permite que history use la pregunta del medico como contexto
+    sin convertirla en evidencia, y que exam acepte hallazgos dictados por el
+    medico. Sin diarizacion, devuelve el transcript plano.
     """
     segments = list(transcription.segments)
     if not any(s.speaker for s in segments):
         return transcription.text
-    expected = EXPECTED_SPEAKER_BY_MODULE.get(module)
-    if not expected:
-        return transcription.text
-    picked = [
-        s.text.strip()
+    turns = [
+        f"[{_coerce_speaker(s.speaker) or 'unknown'}] {s.text.strip()}"
         for s in segments
-        if s.text and s.text.strip() and _coerce_speaker(s.speaker) == expected
+        if s.text and s.text.strip()
     ]
-    filtered = " ".join(picked)
-    return filtered or transcription.text
+    return "\n".join(turns) or transcription.text
 
 
 def _consensus_speaker(segments: list[Segment]) -> SpeakerRole | None:
@@ -62,7 +67,10 @@ def apply_audio_evidence_alignment(
     segments = list(transcription.segments)
 
     for suggestion in suggestions:
-        alignment = align_evidence_to_segments(suggestion.evidence, segments)
+        alignment = align_evidence_to_segments(
+            _strip_turn_prefix(suggestion.evidence),
+            segments,
+        )
         if alignment is None:
             flags = list(suggestion.risk_flags)
             if "no_audio_timestamp" not in flags:

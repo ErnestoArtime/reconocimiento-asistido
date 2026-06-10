@@ -44,13 +44,15 @@ def _coerce_speaker(value: str | None) -> SpeakerRole | None:
     if value is None:
         return None
     normalized = value.strip().lower()
-    if normalized in {"medico", "médico", "doctor", "speaker_00"}:
+    if normalized in {"medico", "médico", "doctor"}:
         return "medico"
-    if normalized in {"paciente", "patient", "speaker_01"}:
+    if normalized in {"paciente", "patient"}:
         return "paciente"
     if normalized in {"acompanante", "acompañante", "companion"}:
         return "acompanante"
     if normalized in {"unknown", "?", ""}:
+        return "unknown"
+    if normalized.startswith("speaker_"):
         return "unknown"
     return "unknown"
 
@@ -70,8 +72,16 @@ def legacy_to_v1(
     Los timestamps de audio se pasan por kwargs (el legacy no los tenia).
     """
     selected_labels: list[str] = []
+    module: str | None = None
+    section: str | None = None
+    question_text: str | None = None
+    question_type: str | None = None
     if isinstance(legacy, ValidatedSuggestion):
         selected_labels = list(legacy.selected_labels)
+        module = legacy.module or None
+        section = legacy.section or None
+        question_text = legacy.question_text or None
+        question_type = legacy.question_type or None
 
     risk_flags: list[RiskFlag] = list(_LEGACY_STATUS_TO_RISK.get(legacy.status, []))
     if extra_flags:
@@ -90,6 +100,10 @@ def legacy_to_v1(
 
     return SuggestionV1(
         question_id=legacy.question_id,
+        module=module,  # type: ignore[arg-type]
+        section=section,
+        question_text=question_text,
+        question_type=question_type,
         selected_codes=list(legacy.selected_codes),
         selected_labels=selected_labels,
         free_text=legacy.free_text,

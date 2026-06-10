@@ -63,6 +63,10 @@ class SuggestionV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question_id: str
+    module: ModuleName | None = None
+    section: str | None = None
+    question_text: str | None = None
+    question_type: str | None = None
     selected_codes: list[str] = Field(default_factory=list)
     selected_labels: list[str] = Field(default_factory=list)
     free_text: str | None = None
