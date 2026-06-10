@@ -25,6 +25,7 @@ from app.services.extraction_guard import (
 from app.services.field_extraction_service import extract_small_batches
 from app.services.graph_mapping_engine import build_graph_report
 from app.services.llm_provider import CloudflareProvider, OllamaProvider
+from app.services.question_family_builder import enrich_questions_with_ai_context
 from app.services.questionnaire_engine import QuestionnaireEngine
 from app.services.risk_flag_policy import apply_risk_flags
 from app.services.provider_policy import enforce_ia_provider_allowed
@@ -157,7 +158,7 @@ def _extract_validated_suggestions(
     # Modulo completo = muchas preguntas. Pre-filtra por relevancia al texto
     # antes de mandar al LLM para evitar alucinacion por sobrecarga de contexto.
     # `questions` completo se conserva fuera para el graph_report.
-    extraction_questions = questions
+    extraction_questions = enrich_questions_with_ai_context(questions)
     if len(questions) > MODULE_WIDE_NARROW_THRESHOLD:
         narrowed = narrow_questions_by_relevance(questions, request.text)
         if narrowed:

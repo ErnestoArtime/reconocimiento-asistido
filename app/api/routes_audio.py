@@ -53,6 +53,7 @@ from app.services.extraction_guard import (
     narrow_questions_by_relevance,
 )
 from app.services.llm_provider import CloudflareProvider, OllamaProvider
+from app.services.question_family_builder import enrich_questions_with_ai_context
 from app.services.questionnaire_engine import QuestionnaireEngine
 from app.api.routes_ia import (
     _extract_validated_suggestions,
@@ -189,7 +190,7 @@ async def transcribe_and_extract(
 
     text = transcription.text
     # Module-wide = muchas preguntas -> pre-filtra por relevancia antes del LLM.
-    extraction_questions = questions
+    extraction_questions = enrich_questions_with_ai_context(questions)
     if len(questions) > MODULE_WIDE_NARROW_THRESHOLD:
         narrowed = narrow_questions_by_relevance(questions, text)
         if narrowed:

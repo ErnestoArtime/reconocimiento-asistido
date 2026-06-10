@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.suggestion import AiSuggestion
 from app.services.extraction_service import extract_from_text, merge_suggestions
+from app.services.question_family_builder import chunk_questions_by_family
 
 
 ExtractorFn = Callable[
@@ -50,7 +51,7 @@ def extract_small_batches(
     if batch_size < 1:
         raise ValueError("batch_size debe ser >= 1")
 
-    batches = chunk_questions(questions, batch_size)
+    batches = chunk_questions_by_family(questions, batch_size)
     if not batches:
         return []
 

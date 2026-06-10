@@ -24,6 +24,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.models.suggestion import AiSuggestion
 from app.services.extraction_service import question_topic_present
+from app.services.question_family_builder import expand_with_family_context
 from app.services.text_utils import normalize_text
 
 
@@ -80,7 +81,8 @@ def narrow_questions_by_relevance(
     norm_text = normalize_text(transcript or "")
     if not norm_text:
         return list(questions)
-    return [q for q in questions if question_topic_present(q, norm_text)]
+    selected = [q for q in questions if question_topic_present(q, norm_text)]
+    return expand_with_family_context(questions, selected)
 
 
 def ground_and_filter_llm(
