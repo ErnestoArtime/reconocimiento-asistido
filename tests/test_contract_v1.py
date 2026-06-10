@@ -152,6 +152,10 @@ class LegacyAdapterTest(unittest.TestCase):
         )
         v1 = legacy_to_v1(validated)
         self.assertEqual(v1.selected_labels, ["No"])
+        self.assertEqual(v1.module, "history")
+        self.assertEqual(v1.section, "HABITOS")
+        self.assertEqual(v1.question_text, "Fuma?")
+        self.assertEqual(v1.question_type, "yesno")
 
     def test_audio_timestamps_propagated(self) -> None:
         legacy = AiSuggestion(
@@ -167,9 +171,9 @@ class LegacyAdapterTest(unittest.TestCase):
     def test_speaker_normalization(self) -> None:
         cases = [
             ("medico", "medico"),
-            ("SPEAKER_00", "medico"),
+            ("SPEAKER_00", "unknown"),
             ("paciente", "paciente"),
-            ("SPEAKER_01", "paciente"),
+            ("SPEAKER_01", "unknown"),
             ("acompanante", "acompanante"),
             (None, None),
             ("random", "unknown"),

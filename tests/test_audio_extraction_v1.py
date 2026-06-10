@@ -19,7 +19,7 @@ from app.services.audio.extraction_v1 import (  # noqa: E402
 
 class ExtractionTextForModuleTest(unittest.TestCase):
     def _diarized(self) -> TranscriptResult:
-        # SPEAKER_00 -> medico, SPEAKER_01 -> paciente (convencion proyecto).
+        # SPEAKER_00/SPEAKER_01 son clusters, no roles clinicos confirmados.
         return TranscriptResult(
             text="Ha fumado? No, lo deje hace anos.",
             segments=[
@@ -28,14 +28,13 @@ class ExtractionTextForModuleTest(unittest.TestCase):
             ],
         )
 
-    def test_history_keeps_only_patient_turns(self) -> None:
+    def test_history_keeps_all_turns_with_speaker_context(self) -> None:
         out = extraction_text_for_module(self._diarized(), "history")
-        self.assertEqual(out, "No, lo deje hace anos.")
-        self.assertNotIn("Ha fumado?", out)
+        self.assertEqual(out, "[unknown] Ha fumado?\n[unknown] No, lo deje hace anos.")
 
-    def test_exam_keeps_only_doctor_turns(self) -> None:
+    def test_exam_keeps_all_turns_with_speaker_context(self) -> None:
         out = extraction_text_for_module(self._diarized(), "exam")
-        self.assertEqual(out, "Ha fumado?")
+        self.assertEqual(out, "[unknown] Ha fumado?\n[unknown] No, lo deje hace anos.")
 
     def test_no_diarization_returns_full_text(self) -> None:
         tr = TranscriptResult(
@@ -45,12 +44,11 @@ class ExtractionTextForModuleTest(unittest.TestCase):
         self.assertEqual(extraction_text_for_module(tr, "history"), "texto completo")
 
     def test_empty_filter_falls_back_to_full(self) -> None:
-        # Solo turnos del medico, pero pedimos history (paciente) -> sin match -> full.
         tr = TranscriptResult(
             text="Ha fumado?",
             segments=[Segment(start=0.0, end=1.0, text="Ha fumado?", speaker="SPEAKER_00")],
         )
-        self.assertEqual(extraction_text_for_module(tr, "history"), "Ha fumado?")
+        self.assertEqual(extraction_text_for_module(tr, "history"), "[unknown] Ha fumado?")
 
 
 class AudioExtractionV1Test(unittest.TestCase):
@@ -131,8 +129,8 @@ class AudioExtractionV1Test(unittest.TestCase):
         [aligned] = apply_audio_evidence_alignment(suggestions, transcription)
         self.assertEqual(aligned.speaker, "paciente")
 
-    def test_speaker_propagation_maps_speaker_00_to_medico(self) -> None:
-        """Convencion: SPEAKER_00 → medico."""
+    def test_speaker_cluster_propagates_as_unknown(self) -> None:
+        """SPEAKER_00 es cluster de diarizacion, no rol medico confirmado."""
         transcription = TranscriptResult(
             text="Exploracion boca normal.",
             segments=[
@@ -148,7 +146,7 @@ class AudioExtractionV1Test(unittest.TestCase):
             ),
         ]
         [aligned] = apply_audio_evidence_alignment(suggestions, transcription)
-        self.assertEqual(aligned.speaker, "medico")
+        self.assertEqual(aligned.speaker, "unknown")
 
     def test_speaker_not_propagated_when_mixed(self) -> None:
         """Ventana con dos speakers distintos → no propagar (consensus fails)."""
