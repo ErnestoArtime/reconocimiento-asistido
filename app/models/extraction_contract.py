@@ -72,6 +72,7 @@ class SuggestionV1(BaseModel):
     free_text: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: str = ""
+    evidence_turn_ids: list[str] = Field(default_factory=list)
 
     # Localizacion temporal en el audio fuente (None si no se pudo alinear)
     audio_start: float | None = Field(default=None, ge=0.0)
@@ -79,6 +80,7 @@ class SuggestionV1(BaseModel):
 
     # Atribucion del hablante segun diarizacion. None cuando no se diariza.
     speaker: SpeakerRole | None = None
+    speaker_cluster: str | None = None
 
     # Estados ortogonales: tecnico (de la IA) y humano (del revisor).
     technical_status: TechnicalStatus = "valid"
@@ -146,6 +148,19 @@ class TranscriptionMetaV1(BaseModel):
     diarized: bool = False
 
 
+class TranscriptTurnV1(BaseModel):
+    """Turno estructurado de una transcripcion diarizada o segmentada."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn_id: str
+    speaker_cluster: str | None = None
+    speaker_role: SpeakerRole = "unknown"
+    start: float | None = Field(default=None, ge=0.0)
+    end: float | None = Field(default=None, ge=0.0)
+    text: str
+
+
 class ExtractionResponseV1(BaseModel):
     """Respuesta unificada de los endpoints `/api/v1/...` de extraccion."""
 
@@ -175,5 +190,6 @@ __all__ = [
     "GraphReportV1",
     "QualityReportV1",
     "TranscriptionMetaV1",
+    "TranscriptTurnV1",
     "ExtractionResponseV1",
 ]

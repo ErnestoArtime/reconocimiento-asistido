@@ -109,9 +109,11 @@ def legacy_to_v1(
         free_text=legacy.free_text,
         confidence=legacy.confidence,
         evidence=legacy.evidence,
+        evidence_turn_ids=list(legacy.evidence_turn_ids),
         audio_start=audio_start,
         audio_end=audio_end,
         speaker=_coerce_speaker(legacy.speaker),
+        speaker_cluster=legacy.speaker_cluster,
         technical_status=technical_status,
         review_status=review_status,
         risk_flags=risk_flags,
@@ -137,7 +139,9 @@ def v1_to_legacy(suggestion: SuggestionV1) -> AiSuggestion:
         free_text=suggestion.free_text,
         confidence=suggestion.confidence,
         evidence=suggestion.evidence,
+        evidence_turn_ids=list(suggestion.evidence_turn_ids),
         speaker=suggestion.speaker,
+        speaker_cluster=suggestion.speaker_cluster,
         status=status,  # type: ignore[arg-type]
     )
 

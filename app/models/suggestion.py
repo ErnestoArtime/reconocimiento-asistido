@@ -12,7 +12,9 @@ class AiSuggestion(BaseModel):
     free_text: str | None = None
     confidence: float = Field(ge=0, le=1)
     evidence: str
+    evidence_turn_ids: list[str] = Field(default_factory=list)
     speaker: str | None = None
+    speaker_cluster: str | None = None
     status: SuggestionStatus = "suggested"
 
 
@@ -33,6 +35,7 @@ class ExtractFromTextRequest(BaseModel):
     ia_provider: str | None = None  # override puntual del IA_PROVIDER del .env
     ia_model: str | None = None  # override puntual de OLLAMA_MODEL para providers locales
     session_id: str | None = None  # si se pasa y la persistencia esta activa, guarda sugerencias
+    transcript_turns: list[dict] | None = None  # uso interno/audio: turnos estructurados para el LLM
 
 
 class ExtractFromTextResponse(BaseModel):

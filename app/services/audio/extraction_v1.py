@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import re
 
-from app.models.extraction_contract import SpeakerRole, SuggestionV1, TranscriptionMetaV1
+from app.models.extraction_contract import (
+    SpeakerRole,
+    SuggestionV1,
+    TranscriptionMetaV1,
+    TranscriptTurnV1,
+)
 from app.models.legacy_adapter import _coerce_speaker
 from app.services.audio.base import Segment, TranscriptResult
 from app.services.audio.evidence_alignment import align_evidence_to_segments
@@ -23,6 +28,25 @@ def _turn_prefix(segment: Segment) -> str:
     return f"[{cluster}|role={role}]"
 
 
+def transcript_turns_v1(transcription: TranscriptResult) -> list[TranscriptTurnV1]:
+    turns: list[TranscriptTurnV1] = []
+    for index, segment in enumerate(transcription.segments, start=1):
+        if not segment.text.strip():
+            continue
+        cluster = (segment.speaker or "NO_SPEAKER").strip() or "NO_SPEAKER"
+        turns.append(
+            TranscriptTurnV1(
+                turn_id=f"t{index}",
+                speaker_cluster=cluster if segment.speaker else None,
+                speaker_role=_coerce_speaker(segment.speaker) or "unknown",
+                start=segment.start,
+                end=segment.end,
+                text=segment.text.strip(),
+            )
+        )
+    return turns
+
+
 def extraction_text_for_module(transcription: TranscriptResult, module: str) -> str:
     """Texto a extraer preservando contexto conversacional.
 
@@ -34,11 +58,7 @@ def extraction_text_for_module(transcription: TranscriptResult, module: str) -> 
     segments = list(transcription.segments)
     if not any(s.speaker for s in segments):
         return transcription.text
-    turns = [
-        f"{_turn_prefix(s)} {s.text.strip()}"
-        for s in segments
-        if s.text and s.text.strip()
-    ]
+    turns = [f"{_turn_prefix(s)} {s.text.strip()}" for s in segments if s.text and s.text.strip()]
     return "\n".join(turns) or transcription.text
 
 
@@ -96,6 +116,18 @@ def apply_audio_evidence_alignment(
             speaker = _consensus_speaker(picked_segments)
             if speaker is not None:
                 updates["speaker"] = speaker
+        if not suggestion.evidence_turn_ids:
+            updates["evidence_turn_ids"] = [
+                f"t{index + 1}" for index in alignment.segment_indexes
+            ]
+        if suggestion.speaker_cluster is None:
+            clusters = {
+                segments[i].speaker
+                for i in alignment.segment_indexes
+                if 0 <= i < len(segments) and segments[i].speaker
+            }
+            if len(clusters) == 1:
+                updates["speaker_cluster"] = next(iter(clusters))
 
         aligned.append(suggestion.model_copy(update=updates))
     return aligned

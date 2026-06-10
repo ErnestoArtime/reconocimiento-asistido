@@ -36,6 +36,7 @@ def extract_small_batches(
     batch_size: int = 6,
     extractor: ExtractorFn = extract_from_text,
     max_workers: int = 1,
+    extractor_kwargs: dict[str, Any] | None = None,
 ) -> list[AiSuggestion]:
     """Extrae por lotes pequenos y fusiona por `question_id`.
 
@@ -50,6 +51,7 @@ def extract_small_batches(
     """
     if batch_size < 1:
         raise ValueError("batch_size debe ser >= 1")
+    extractor_kwargs = extractor_kwargs or {}
 
     batches = chunk_questions_by_family(questions, batch_size)
     if not batches:
@@ -59,12 +61,21 @@ def extract_small_batches(
         with ThreadPoolExecutor(max_workers=min(max_workers, len(batches))) as pool:
             results = list(
                 pool.map(
-                    lambda batch: extractor(text, module, section, list(batch)),
+                    lambda batch: extractor(
+                        text,
+                        module,
+                        section,
+                        list(batch),
+                        **extractor_kwargs,
+                    ),
                     batches,
                 )
             )
     else:
-        results = [extractor(text, module, section, list(batch)) for batch in batches]
+        results = [
+            extractor(text, module, section, list(batch), **extractor_kwargs)
+            for batch in batches
+        ]
 
     merged: list[AiSuggestion] = []
     for suggestions in results:

@@ -161,6 +161,12 @@ def build_extraction_schema(questions: list[dict[str, Any]]) -> dict[str, Any]:
                         "maximum": 1,
                     },
                     "evidence": {"type": "string", "minLength": 1},
+                    "evidence_turn_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "uniqueItems": True,
+                    },
+                    "speaker_cluster": {"type": ["string", "null"]},
                 },
             }
         )
@@ -184,6 +190,7 @@ def _build_user_prompt(
     section: str,
     questions: list[dict[str, Any]],
     clinical_context: str | None = None,
+    transcript_turns: list[dict[str, Any]] | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "module": module,
@@ -198,10 +205,14 @@ def _build_user_prompt(
                     "free_text": "string|null",
                     "confidence": 0.0,
                     "evidence": "string",
+                    "evidence_turn_ids": ["string"],
+                    "speaker_cluster": "string|null",
                 }
             ]
         },
     }
+    if transcript_turns:
+        payload["transcript_turns"] = transcript_turns
     context_note = ""
     if clinical_context:
         payload["clinical_context"] = clinical_context
@@ -379,12 +390,13 @@ class CloudflareProvider:
         section: str,
         questions: list[dict[str, Any]],
         clinical_context: str | None = None,
+        transcript_turns: list[dict[str, Any]] | None = None,
     ) -> list[AiSuggestion]:
         if not questions:
             return []
 
         user_prompt = _build_user_prompt(
-            text, module, section, questions, clinical_context
+            text, module, section, questions, clinical_context, transcript_turns
         )
         content = self._run(
             [
@@ -513,12 +525,13 @@ class OllamaProvider:
         section: str,
         questions: list[dict[str, Any]],
         clinical_context: str | None = None,
+        transcript_turns: list[dict[str, Any]] | None = None,
     ) -> list[AiSuggestion]:
         if not questions:
             return []
 
         user_prompt = _build_user_prompt(
-            text, module, section, questions, clinical_context
+            text, module, section, questions, clinical_context, transcript_turns
         )
         messages = [
             {"role": "system", "content": build_system_prompt(module)},
