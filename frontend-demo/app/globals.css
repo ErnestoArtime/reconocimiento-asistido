@@ -400,7 +400,7 @@ td mark {
 }
 
 .assistantPanel {
-  width: min(980px, 100vw);
+  width: min(1080px, 100vw);
   height: 100vh;
   background: var(--bg);
   border-left: 1px solid var(--border);
@@ -433,12 +433,145 @@ td mark {
   font-weight: 650;
 }
 
+.assistantControls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: #eef2f7;
+  align-items: start;
+}
+
+.controlGroup {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.controlGroupBase {
+  border-left: 4px solid var(--accent);
+}
+
+.controlGroupV2 {
+  border-left: 4px solid #7c3aed;
+}
+
+.controlGroupHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px 0;
+}
+
+.controlGroupHeaderText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.controlGroupTitle {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.controlGroupHint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.controlGroupToggle {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.controlGroupToggle:hover {
+  border-color: var(--accent);
+  background: #f8fafc;
+}
+
+.controlGroupBody {
+  display: flex;
+  flex-direction: column;
+}
+
+.controlGroupCollapsed {
+  min-height: 0;
+}
+
 .assistantToolbar {
   display: flex;
   gap: 8px;
-  padding: 14px 24px;
-  border-bottom: 1px solid var(--border);
+  padding: 10px 12px 12px;
   background: #f8fafc;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.assistantToolbarV2 {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  background: #f7f3ff;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.v2StatusStrip {
+  display: flex;
+  gap: 12px;
+  padding: 0 12px 10px;
+  color: #5b21b6;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.v2StatusStrip strong {
+  color: #4c1d95;
+}
+
+.v2LiveText {
+  min-width: min(100%, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbarSectionLabel {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+.toolbarDivider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 4px;
 }
 
 .recordButton,
@@ -497,7 +630,7 @@ td mark {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: 0.82fr 1.18fr;
+  grid-template-columns: 0.7fr 1.3fr;
   gap: 16px;
   padding: 18px 24px;
 }
@@ -742,7 +875,8 @@ textarea:focus,
   }
 
   .historyGrid,
-  .assistantColumns {
+  .assistantColumns,
+  .assistantControls {
     grid-template-columns: 1fr;
   }
 

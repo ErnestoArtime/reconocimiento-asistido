@@ -200,17 +200,28 @@ export function openStreamingTranscription({
   if (language) qs.set("language", language);
   const ws = new WebSocket(`${wsBase}/api/audio/stream?${qs.toString()}`);
   ws.binaryType = "arraybuffer";
+
+  let doneResolving = null;
+  let closedIntentionally = false;
+
   ws.addEventListener("message", (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.error) return onError && onError(msg.error);
+      if (msg.done) {
+        if (doneResolving) doneResolving();
+        return;
+      }
       if (msg.is_final) onFinal && onFinal(msg);
       else onPartial && onPartial(msg);
     } catch (err) {
       onError && onError(err.message || String(err));
     }
   });
-  ws.addEventListener("close", () => onClose && onClose());
+  ws.addEventListener("close", () => {
+    if (doneResolving) doneResolving();
+    if (!closedIntentionally) onClose && onClose();
+  });
   ws.addEventListener(
     "error",
     (err) => onError && onError(err.message || "ws error"),
@@ -225,12 +236,33 @@ export function openStreamingTranscription({
       return false;
     },
     stop() {
+      closedIntentionally = true;
       try {
         if (ws.readyState === WebSocket.OPEN) ws.send("__end__");
       } catch {}
-      try {
-        ws.close();
-      } catch {}
+      // Wait up to 5s for server to flush buffer and send final result.
+      return new Promise((resolve) => {
+        doneResolving = resolve;
+        const timeout = setTimeout(() => {
+          doneResolving = null;
+          try {
+            ws.close();
+          } catch {}
+          resolve();
+        }, 5000);
+        // If the socket closes before timeout, the close handler resolves too.
+        const origResolve = resolve;
+        doneResolving = () => {
+          clearTimeout(timeout);
+          origResolve();
+        };
+        // If already closed (e.g. server closed first), resolve immediately.
+        if (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) {
+          clearTimeout(timeout);
+          doneResolving = null;
+          resolve();
+        }
+      });
     },
   };
 }

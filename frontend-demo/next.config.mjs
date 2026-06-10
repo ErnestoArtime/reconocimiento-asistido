@@ -8,6 +8,26 @@ const nextConfig = {
     // --noEmit). Evitamos bloquear el build por un tipo interno de Next.
     ignoreBuildErrors: true,
   },
+  serverExternalPackages: ["@xenova/transformers"],
+  webpack: (config, { webpack }) => {
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      "onnxruntime-node": false,
+      fs: false,
+      path: false,
+      crypto: false,
+    };
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "onnxruntime-node": false,
+    };
+    config.plugins.push(
+      new webpack.IgnorePlugin({
+        resourceRegExp: /\.node$/,
+      }),
+    );
+    return config;
+  },
 };
 
 export default nextConfig;

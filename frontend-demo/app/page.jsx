@@ -41,6 +41,11 @@ import {
   transcribeAndExtract,
   transcribeAudio,
 } from "./lib/api";
+import { useTranscriberV2, DEFAULT_V2_MODEL } from "./hooks/useTranscriberV2";
+import {
+  useRealtimePreviewV2,
+  VOSK_MODELS,
+} from "./hooks/useRealtimePreviewV2";
 import AuditPanel from "./components/AuditPanel";
 
 const initialSections = [
@@ -263,6 +268,38 @@ function QuestionSection({ section, onToggle }) {
   );
 }
 
+function CollapsibleControlGroup({
+  className = "",
+  title,
+  hint,
+  open,
+  onToggle,
+  children,
+}) {
+  return (
+    <section
+      className={`controlGroup ${className} ${open ? "" : "controlGroupCollapsed"}`}
+    >
+      <div className="controlGroupHeader">
+        <div className="controlGroupHeaderText">
+          <span className="controlGroupTitle">{title}</span>
+          <span className="controlGroupHint">{hint}</span>
+        </div>
+        <button
+          type="button"
+          className="controlGroupToggle"
+          onClick={onToggle}
+          aria-expanded={open}
+        >
+          {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          <span>{open ? "Colapsar" : "Expandir"}</span>
+        </button>
+      </div>
+      {open && <div className="controlGroupBody">{children}</div>}
+    </section>
+  );
+}
+
 function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   const [module, setModule] = useState("exam");
   const [sectionsList, setSectionsList] = useState([]);
@@ -283,16 +320,20 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   // streaming en vivo
   const [streaming, setStreaming] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [v1ControlsOpen, setV1ControlsOpen] = useState(true);
+  const [v2ControlsOpen, setV2ControlsOpen] = useState(true);
   const [streamPartial, setStreamPartial] = useState("");
   const [streamChunks, setStreamChunks] = useState(0);
   const [streamMsgs, setStreamMsgs] = useState(0);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
   const processorRef = useRef(null);
+  const workletNodeRef = useRef(null);
   const sourceRef = useRef(null);
   const liveStreamRef = useRef(null);
   const pcmFullRef = useRef([]); // acumula chunks PCM completos para refinar al detener
   const streamGotMsgRef = useRef(false); // ¿llegó algún partial/final del WS?
+  const streamTextRef = useRef(""); // texto final acumulado durante streaming
 
   // Entrevista asistida en vivo: extracción incremental sobre el transcript
   // acumulado a medida que llegan los segmentos finales del WS.
@@ -317,6 +358,34 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   const [iaProvider, setIaProvider] = useState(""); // "" = usa el del .env
   const [iaModel, setIaModel] = useState(""); // "" = modelo default del backend
   const [iaDefault, setIaDefault] = useState("");
+
+  // --- V2: transcripcion client-side con Whisper ONNX ---
+  const transcriberV2 = useTranscriberV2();
+  const [v2Recording, setV2Recording] = useState(false);
+  const [v2Transcribing, setV2Transcribing] = useState(false);
+  const [v2ModelLoading, setV2ModelLoading] = useState(false);
+  const [v2Model, setV2Model] = useState(DEFAULT_V2_MODEL);
+  const v2RecorderRef = useRef(null);
+  const v2ChunksRef = useRef([]);
+  const v2StreamRef = useRef(null);
+
+  // --- V2: streaming real-time con Vosk (Kaldi WASM) ---
+  const voskV2 = useRealtimePreviewV2();
+  const [voskV2Active, setVoskV2Active] = useState(false);
+  const [voskV2ModelSize, setVoskV2ModelSize] = useState("medium");
+  const [voskV2ModelLoading, setVoskV2ModelLoading] = useState(false);
+  const voskV2StreamRef = useRef(null);
+
+  useEffect(() => {
+    if (!voskV2Active) return;
+    const liveText = [voskV2.finalText, voskV2.interimText]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    if (!liveText) return;
+    setText(liveText);
+    setTranscript(liveText);
+  }, [voskV2Active, voskV2.finalText, voskV2.interimText]);
 
   useEffect(() => {
     let cancelled = false;
@@ -347,6 +416,12 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   const activeIaSupportsModel = activeIaModels.length > 0;
 
   // Modelos de audio seleccionables del provider activo (faster_whisper).
+  const activeAudioMeta = audioProvider
+    ? providers.find((p) => p.name === audioProvider)
+    : null;
+  const liveStreamProvider = activeAudioMeta?.supports_streaming
+    ? audioProvider
+    : undefined;
   const audioModels = useMemo(() => {
     const meta = audioProvider
       ? providers.find((p) => p.name === audioProvider)
@@ -436,31 +511,66 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   }
 
   async function startRecording() {
+    console.log("[rec] startRecording called, loading=", loading, "recording=", recording);
     setError("");
+    setAudioBlob(null);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.error("[rec] mediaDevices API not available");
+      setError(
+        "API de microfono no disponible. Asegurate de usar HTTPS o localhost, y que tu navegador soporte MediaDevices.",
+      );
+      return;
+    }
     try {
+      setError("Solicitando acceso al microfono...");
+      console.log("[rec] calling getUserMedia...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("[rec] getUserMedia OK, stream tracks:", stream.getTracks().length);
+      setError("");
       const recorder = new MediaRecorder(stream);
+      console.log("[rec] MediaRecorder created, mimeType:", recorder.mimeType);
       chunksRef.current = [];
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
       };
       recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const totalBytes = chunksRef.current.reduce(
+          (sum, c) => sum + c.size,
+          0,
+        );
+        if (totalBytes < 1024) {
+          setError(
+            "La grabacion esta vacia o demasiado corta. Manten el boton grabando al menos 2 segundos.",
+          );
+          setAudioBlob(null);
+          return;
+        }
         const blob = new Blob(chunksRef.current, {
           type: recorder.mimeType || "audio/webm",
         });
         setAudioBlob(blob);
-        stream.getTracks().forEach((track) => track.stop());
+        void transcribeBlob(blob, "audio.webm");
       };
-      recorder.start();
+      recorder.start(250);
+      console.log("[rec] recorder started, state:", recorder.state);
       recorderRef.current = recorder;
       setRecording(true);
-      setAudioBlob(null);
     } catch (err) {
-      setError("No se pudo acceder al microfono: " + (err.message || err));
+      console.error("[rec] startRecording error:", err);
+      const msg = err.message || String(err);
+      if (msg.includes("Permission") || msg.includes("permission") || msg.includes("denied")) {
+        setError("Permiso de microfono denegado. Habilita el microfono en la configuracion del navegador.");
+      } else if (msg.includes("NotFoundError") || msg.includes("not found")) {
+        setError("No se detecto ningun microfono conectado.");
+      } else {
+        setError("No se pudo acceder al microfono: " + msg);
+      }
     }
   }
 
   function stopRecording() {
+    console.log("[rec] stopRecording, recorder state:", recorderRef.current?.state);
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
@@ -476,19 +586,15 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   }
 
   // Paso 1: solo transcribir audio → texto. NO llama LLM.
-  async function handleTranscribeOnly() {
-    if (!audioBlob) {
-      setError("Graba o sube un audio primero");
-      return;
-    }
+  async function transcribeBlob(blob, filename = "audio.webm") {
     setError("");
     setLoading(true);
     setSuggestions([]);
     setTranscribeStats(null);
     try {
       const data = await transcribeAudio({
-        audioBlob,
-        filename: audioBlob.name || "audio.webm",
+        audioBlob: blob,
+        filename,
         provider: audioProvider || undefined,
         model: audioModel || undefined,
       });
@@ -507,6 +613,14 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleTranscribeOnly() {
+    if (!audioBlob) {
+      setError("Graba o sube un audio primero");
+      return;
+    }
+    await transcribeBlob(audioBlob, audioBlob.name || "audio.webm");
   }
 
   // Atajo: transcribir + extraer LLM en un solo paso (modo confianza).
@@ -652,6 +766,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     setStreamChunks(0);
     setStreamMsgs(0);
     streamGotMsgRef.current = false;
+    streamTextRef.current = "";
     pcmFullRef.current = [];
     liveAssistRef.current = assist;
     assistTextRef.current = "";
@@ -665,20 +780,22 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         window.AudioContext || window.webkitAudioContext
       )();
       sourceRef.current = audioCtxRef.current.createMediaStreamSource(stream);
-      processorRef.current = audioCtxRef.current.createScriptProcessor(
-        4096,
-        1,
-        1,
-      );
 
       const handle = openStreamingTranscription({
-        provider: audioProvider || undefined,
+        provider: liveStreamProvider,
         language: "es",
         onPartial: (msg) => {
           console.log("[ws] partial:", msg.text);
           streamGotMsgRef.current = true;
           setStreamMsgs((n) => n + 1);
-          setStreamPartial(msg.text || "");
+          const partial = (msg.text || "").trim();
+          setStreamPartial(partial);
+          const combined = [streamTextRef.current, partial]
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+          setText(combined);
+          setTranscript(combined);
         },
         onFinal: (msg) => {
           console.log("[ws] FINAL:", msg.text);
@@ -686,12 +803,12 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
           setStreamMsgs((n) => n + 1);
           setStreamPartial("");
           if (msg.text) {
-            setText((prev) =>
-              prev ? prev + " " + msg.text.trim() : msg.text.trim(),
-            );
-            setTranscript((prev) =>
-              prev ? prev + " " + msg.text.trim() : msg.text.trim(),
-            );
+            streamTextRef.current = [streamTextRef.current, msg.text.trim()]
+              .filter(Boolean)
+              .join(" ")
+              .trim();
+            setText(streamTextRef.current);
+            setTranscript(streamTextRef.current);
             // Modo asistido: acumula y dispara extracción incremental.
             if (liveAssistRef.current) {
               assistTextRef.current = assistTextRef.current
@@ -731,9 +848,8 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         inputSampleRate,
         "downsample to 16000",
       );
-      processorRef.current.onaudioprocess = (e) => {
+      const sendFloatChunk = (float) => {
         if (!handle || !streamRef.current) return;
-        const float = e.inputBuffer.getChannelData(0);
         const ds = downsampleBuffer(float, inputSampleRate, 16000);
         const pcm = floatTo16BitPCM(ds);
         try {
@@ -747,8 +863,31 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         const copy = new Uint8Array(pcm.buffer.slice(0));
         pcmFullRef.current.push(copy.buffer);
       };
-      sourceRef.current.connect(processorRef.current);
-      processorRef.current.connect(audioCtxRef.current.destination);
+      if (audioCtxRef.current.audioWorklet) {
+        await audioCtxRef.current.audioWorklet.addModule(
+          "/audio-capture-worklet.js",
+        );
+        workletNodeRef.current = new AudioWorkletNode(
+          audioCtxRef.current,
+          "audio-capture-processor",
+          { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 },
+        );
+        workletNodeRef.current.port.onmessage = (event) => {
+          sendFloatChunk(event.data);
+        };
+        sourceRef.current.connect(workletNodeRef.current);
+      } else {
+        processorRef.current = audioCtxRef.current.createScriptProcessor(
+          4096,
+          1,
+          1,
+        );
+        processorRef.current.onaudioprocess = (e) => {
+          sendFloatChunk(e.inputBuffer.getChannelData(0));
+        };
+        sourceRef.current.connect(processorRef.current);
+        processorRef.current.connect(audioCtxRef.current.destination);
+      }
       setStreaming(true);
     } catch (err) {
       setError("No se pudo iniciar streaming: " + (err.message || err));
@@ -806,20 +945,470 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     pcmFullRef.current = [];
   }
 
-  function stopStreaming() {
+  // --- V2: grabacion + transcripcion client-side (Whisper ONNX) ---
+
+  async function startRecordingV2() {
+    setError("");
+    setAudioBlob(null);
+    setSuggestions([]);
+    setTranscribeStats(null);
+    voskV2.reset();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError("API de microfono no disponible. Usa HTTPS o localhost.");
+      return;
+    }
+    try {
+      setError("Solicitando acceso al microfono...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      v2StreamRef.current = stream;
+      setError("");
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+      const recorder = new MediaRecorder(stream, { mimeType });
+      v2ChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) v2ChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        v2StreamRef.current = null;
+        voskV2StreamRef.current = null;
+        const totalBytes = v2ChunksRef.current.reduce(
+          (sum, c) => sum + c.size,
+          0,
+        );
+        if (totalBytes < 1024) {
+          setError(
+            "La grabacion esta vacia o demasiado corta (minimo 2 segundos).",
+          );
+          setV2Recording(false);
+          return;
+        }
+        const blob = new Blob(v2ChunksRef.current, { type: mimeType });
+        v2ChunksRef.current = [];
+        setAudioBlob(blob);
+        setV2Recording(false);
+        // Auto-transcribe with V2
+        transcribeV2(blob);
+      };
+      recorder.start(250);
+      v2RecorderRef.current = recorder;
+      setV2Recording(true);
+
+      try {
+        setVoskV2ModelLoading(true);
+        await voskV2.init(voskV2ModelSize);
+        setVoskV2ModelLoading(false);
+        voskV2StreamRef.current = stream;
+        voskV2.start("es", stream);
+        setVoskV2Active(true);
+      } catch (previewErr) {
+        setVoskV2ModelLoading(false);
+        setVoskV2Active(false);
+        console.warn("Vosk V2 preview fallo:", previewErr);
+      }
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (msg.includes("Permission") || msg.includes("denied")) {
+        setError(
+          "Permiso de microfono denegado. Habilita el microfono en la configuracion del navegador.",
+        );
+      } else if (msg.includes("NotFoundError")) {
+        setError("No se detecto ningun microfono conectado.");
+      } else {
+        setError("No se pudo acceder al microfono: " + msg);
+      }
+      setV2Recording(false);
+      setVoskV2Active(false);
+      setVoskV2ModelLoading(false);
+    }
+  }
+
+  function stopRecordingV2() {
+    if (voskV2Active) {
+      const voskText = voskV2.stop();
+      setVoskV2Active(false);
+      if (voskText) {
+        setText(voskText);
+        setTranscript(voskText);
+      }
+    }
+    if (v2RecorderRef.current && v2RecorderRef.current.state !== "inactive") {
+      v2RecorderRef.current.stop();
+    }
+    setV2Recording(false);
+  }
+
+  async function transcribeV2(blob) {
+    if (!blob) return;
+    setError("");
+    setV2Transcribing(true);
+    setSuggestions([]);
+    setTranscribeStats(null);
+    try {
+      setV2ModelLoading(true);
+      await transcriberV2.ensureModelReady(v2Model);
+      setV2ModelLoading(false);
+
+      const t0 = performance.now();
+      const text = await transcriberV2.transcribe(
+        blob,
+        v2Model,
+        "es",
+      );
+      const elapsed = performance.now() - t0;
+
+      setTranscript(text);
+      setText(text);
+      setTranscribeStats({
+        duration_s: 0,
+        rtf: 0,
+        provider: "whisper-onnx-browser",
+        model: v2Model,
+        language: "es",
+      });
+      setExtractStats({
+        server_ms: 0,
+        client_ms: elapsed,
+        provider_used: "whisper-onnx-browser",
+        model_used: v2Model,
+        count: 0,
+      });
+    } catch (err) {
+      setError("V2 transcripcion fallo: " + (err.message || err));
+    } finally {
+      setV2Transcribing(false);
+      setV2ModelLoading(false);
+    }
+  }
+
+  async function transcribeV2WithBackend(blob, filename = "audio_v2.webm") {
+    if (!blob) return;
+    setError("");
+    setV2Transcribing(true);
+    setSuggestions([]);
+    setTranscribeStats(null);
+    try {
+      const data = await transcribeAudio({
+        audioBlob: blob,
+        filename,
+        provider: audioProvider || undefined,
+        model: audioModel || undefined,
+        useCache: false,
+      });
+      const txt = data.text || "";
+      setTranscript(txt);
+      setText(txt);
+      setTranscribeStats({
+        duration_s: data.duration_s,
+        rtf: data.rtf,
+        provider: data.provider,
+        model: data.model,
+        language: data.language,
+      });
+      setExtractStats({
+        server_ms: data.transcribe_ms,
+        client_ms: 0,
+        provider_used: data.provider,
+        model_used: data.model,
+        count: 0,
+      });
+    } catch (err) {
+      setError("V2 backend transcripcion fallo: " + (err.message || err));
+    } finally {
+      setV2Transcribing(false);
+    }
+  }
+
+  async function handleTranscribeAndExtractV2() {
+    if (!audioBlob) {
+      setError("Graba o sube un audio primero (V2)");
+      return;
+    }
+    setError("");
+    setV2Transcribing(true);
+    setSuggestions([]);
+    setTranscript("");
+    setClinicalSummary("");
+    setTranscribeStats(null);
+    setExtractStats(null);
+    try {
+      setV2ModelLoading(true);
+      await transcriberV2.ensureModelReady(v2Model);
+      setV2ModelLoading(false);
+
+      const t0 = performance.now();
+      const transcribedText = await transcriberV2.transcribe(
+        audioBlob,
+        v2Model,
+        "es",
+      );
+      const transcribeMs = performance.now() - t0;
+
+      setTranscript(transcribedText);
+      setText(transcribedText);
+      setTranscribeStats({
+        duration_s: 0,
+        rtf: 0,
+        provider: "whisper-onnx-browser",
+        model: v2Model,
+        language: "es",
+      });
+
+      // Now extract suggestions using backend LLM
+      const t1 = performance.now();
+      const data = await extractFromText({
+        module,
+        section,
+        text: transcribedText,
+        iaProvider: iaProvider || undefined,
+        iaModel: activeIaSupportsModel ? iaModel || undefined : undefined,
+      });
+      const extractMs = performance.now() - t1;
+      const items = (data.suggestions || []).map((raw) =>
+        adaptSuggestion(raw, data, questionsMap[raw.question_id]),
+      );
+      setSuggestions(items);
+      setClinicalSummary(data.clinical_summary || "");
+      setExtractStats({
+        server_ms: data.extract_ms,
+        client_ms: extractMs,
+        provider_used: data.ia_provider_used || data.quality_report?.provider,
+        model_used: data.ia_model_used || data.quality_report?.model,
+        count: items.length,
+        quality_report: data.quality_report,
+        graph_report: data.graph_report,
+      });
+    } catch (err) {
+      setError("V2 fallo: " + (err.message || err));
+    } finally {
+      setV2Transcribing(false);
+      setV2ModelLoading(false);
+    }
+  }
+
+  async function handleTranscribeBackendAndExtractV2() {
+    if (!audioBlob) {
+      setError("Graba o sube un audio primero (V2)");
+      return;
+    }
+    setError("");
+    setV2Transcribing(true);
+    setSuggestions([]);
+    setTranscript("");
+    setClinicalSummary("");
+    setTranscribeStats(null);
+    setExtractStats(null);
+    const t0 = performance.now();
+    try {
+      const data = await transcribeAndExtract({
+        audioBlob,
+        filename: audioBlob.name || "audio_v2.webm",
+        module,
+        section,
+        provider: audioProvider || undefined,
+        model: audioModel || undefined,
+        iaProvider: iaProvider || undefined,
+        iaModel: activeIaSupportsModel ? iaModel || undefined : undefined,
+      });
+      const tr = data.transcription || {};
+      setTranscript(tr.text || "");
+      setText(tr.text || "");
+      setTranscribeStats({
+        duration_s: tr.duration_s,
+        rtf: tr.rtf,
+        provider: tr.provider,
+        model: tr.model,
+        language: tr.language,
+      });
+      const clientMs = performance.now() - t0;
+      const items = (data.suggestions || []).map((raw) =>
+        adaptSuggestion(raw, data, questionsMap[raw.question_id]),
+      );
+      setSuggestions(items);
+      setClinicalSummary(data.clinical_summary || "");
+      setExtractStats({
+        server_ms: data.extract_ms,
+        client_ms: clientMs,
+        provider_used: data.ia_provider_used || data.quality_report?.provider,
+        model_used: data.ia_model_used || data.quality_report?.model,
+        count: items.length,
+        quality_report: data.quality_report,
+        graph_report: data.graph_report,
+      });
+    } catch (err) {
+      setError("V2 backend fallo: " + (err.message || err));
+    } finally {
+      setV2Transcribing(false);
+    }
+  }
+
+  // --- V2: streaming real-time con Vosk (Kaldi WASM en browser) ---
+
+  async function startVoskV2() {
+    setError("");
+    setAudioBlob(null);
+    setSuggestions([]);
+    setTranscribeStats(null);
+    voskV2.reset();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError("API de microfono no disponible. Usa HTTPS o localhost.");
+      return;
+    }
+    try {
+      setError("Cargando modelo Vosk...");
+      setVoskV2ModelLoading(true);
+      await voskV2.init(voskV2ModelSize);
+      setVoskV2ModelLoading(false);
+
+      setError("Solicitando acceso al microfono...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voskV2StreamRef.current = stream;
+      v2StreamRef.current = stream;
+      setError("");
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+      const recorder = new MediaRecorder(stream, { mimeType });
+      v2ChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) v2ChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        v2StreamRef.current = null;
+        voskV2StreamRef.current = null;
+        const totalBytes = v2ChunksRef.current.reduce(
+          (sum, c) => sum + c.size,
+          0,
+        );
+        if (totalBytes < 1024) {
+          v2ChunksRef.current = [];
+          setV2Recording(false);
+          setError(
+            "La entrevista V2 esta vacia o demasiado corta (minimo 2 segundos).",
+          );
+          return;
+        }
+        const blob = new Blob(v2ChunksRef.current, { type: mimeType });
+        v2ChunksRef.current = [];
+        setAudioBlob(blob);
+        setV2Recording(false);
+        transcribeV2WithBackend(blob, "entrevista_v2.webm");
+      };
+      recorder.start(250);
+      v2RecorderRef.current = recorder;
+
+      voskV2.start("es", stream);
+      setV2Recording(true);
+      setVoskV2Active(true);
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (msg.includes("Permission") || msg.includes("denied")) {
+        setError(
+          "Permiso de microfono denegado. Habilita el microfono en la configuracion del navegador.",
+        );
+      } else {
+        setError("Vosk V2 fallo: " + msg);
+      }
+      setVoskV2Active(false);
+      setVoskV2ModelLoading(false);
+      setV2Recording(false);
+    }
+  }
+
+  function stopVoskV2() {
+    const voskText = voskV2.stop();
+    setVoskV2Active(false);
+    if (voskText) {
+      setText(voskText);
+      setTranscript(voskText);
+    }
+    if (v2RecorderRef.current && v2RecorderRef.current.state !== "inactive") {
+      v2RecorderRef.current.stop();
+      return;
+    }
+    if (voskV2StreamRef.current) {
+      voskV2StreamRef.current.getTracks().forEach((t) => t.stop());
+      voskV2StreamRef.current = null;
+      v2StreamRef.current = null;
+    }
+    setV2Recording(false);
+  }
+
+  async function handleVoskV2TranscribeAndExtract() {
+    const accumulatedText = (
+      (voskV2.finalText || "") +
+      " " +
+      (voskV2.interimText || "")
+    ).trim();
+    if (!accumulatedText) {
+      setError("No hay texto de Vosk para procesar. Graba la entrevista primero.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    setSuggestions([]);
+    setTranscript(accumulatedText);
+    setText(accumulatedText);
+    setClinicalSummary("");
+    setExtractStats(null);
+    const t0 = performance.now();
+    try {
+      const data = await extractFromText({
+        module,
+        section,
+        text: accumulatedText,
+        iaProvider: iaProvider || undefined,
+        iaModel: activeIaSupportsModel ? iaModel || undefined : undefined,
+      });
+      const clientMs = performance.now() - t0;
+      const items = (data.suggestions || []).map((raw) =>
+        adaptSuggestion(raw, data, questionsMap[raw.question_id]),
+      );
+      setSuggestions(items);
+      setClinicalSummary(data.clinical_summary || "");
+      setExtractStats({
+        server_ms: data.extract_ms,
+        client_ms: clientMs,
+        provider_used: data.ia_provider_used || data.quality_report?.provider,
+        model_used: data.ia_model_used || data.quality_report?.model,
+        count: items.length,
+        quality_report: data.quality_report,
+        graph_report: data.graph_report,
+      });
+    } catch (err) {
+      setError("Vosk V2 extraccion fallo: " + (err.message || err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function stopStreaming() {
+    const handle = streamRef.current;
     try {
       processorRef.current && processorRef.current.disconnect();
+      workletNodeRef.current && workletNodeRef.current.disconnect();
       sourceRef.current && sourceRef.current.disconnect();
       audioCtxRef.current && audioCtxRef.current.close();
       liveStreamRef.current &&
         liveStreamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current && streamRef.current.stop();
     } catch {}
     processorRef.current = null;
+    workletNodeRef.current = null;
     sourceRef.current = null;
     audioCtxRef.current = null;
     liveStreamRef.current = null;
     streamRef.current = null;
+    // Wait for server to flush remaining audio and send final result.
+    if (handle) {
+      try {
+        await handle.stop();
+      } catch {}
+    }
     setStreaming(false);
     // dispara refinamiento con modelo grande (medium) sobre audio completo
     refineAfterStream();
@@ -882,7 +1471,15 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
           </button>
         </header>
 
-        <div className="assistantToolbar" style={{ flexWrap: "wrap", gap: 8 }}>
+        <div className="assistantControls">
+          <CollapsibleControlGroup
+            className="controlGroupBase"
+            title="V1 Backend"
+            hint="Transcripcion autoritativa con timestamps"
+            open={v1ControlsOpen}
+            onToggle={() => setV1ControlsOpen((value) => !value)}
+          >
+            <div className="assistantToolbar" style={{ flexWrap: "wrap", gap: 8 }}>
           <select
             value={module}
             onChange={(e) => setModule(e.target.value)}
@@ -911,10 +1508,10 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             title="Provider de transcripcion (default = backend)"
             disabled={streaming || loading}
           >
-            <option value="">audio auto</option>
+            <option value="">STT V1 auto</option>
             {providers.map((p) => (
               <option key={p.name} value={p.name}>
-                STT: {p.name}
+                STT V1: {p.name}
                 {p.supports_streaming ? " *stream" : ""}
                 {p.supports_diarization ? " *diar" : ""}
               </option>
@@ -928,10 +1525,10 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               title="Modelo de transcripcion (faster_whisper)"
               disabled={streaming || loading}
             >
-              <option value="">modelo auto</option>
+              <option value="">Modelo STT V1 auto</option>
               {audioModels.map((m) => (
                 <option key={m} value={m}>
-                  modelo: {m}
+                  Modelo STT V1: {m}
                 </option>
               ))}
             </select>
@@ -981,17 +1578,17 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               disabled={loading}
             >
               <Mic size={18} />
-              <span>Grabar</span>
+              <span>Grabar V1</span>
             </button>
           ) : (
             <button className="recordButton recording" onClick={stopRecording}>
               <Square size={18} />
-              <span>Detener</span>
+              <span>Detener V1</span>
             </button>
           )}
           <label className="primaryButton subtle" style={{ cursor: "pointer" }}>
             <Upload size={18} />
-            <span>Subir audio</span>
+            <span>Subir audio V1</span>
             <input
               type="file"
               accept="audio/*"
@@ -999,48 +1596,6 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               style={{ display: "none" }}
             />
           </label>
-          <label className="advancedToggle">
-            <input
-              type="checkbox"
-              checked={advancedOpen}
-              onChange={(event) => setAdvancedOpen(event.target.checked)}
-            />
-            <span>Avanzado</span>
-          </label>
-          {/* Entrevista en vivo asistida: transcribe + sugiere incrementalmente */}
-          {!streaming ? (
-            <button
-              className="recordButton"
-              onClick={() => startStreaming(true)}
-              disabled={loading || recording}
-              title="Transcribe y propone sugerencias en vivo, a medida que avanza la entrevista"
-            >
-              <Sparkles size={18} />
-              <span>Entrevista en vivo</span>
-            </button>
-          ) : liveAssist ? (
-            <button className="recordButton recording" onClick={stopStreaming}>
-              <Square size={18} />
-              <span>Detener entrevista</span>
-            </button>
-          ) : null}
-          {advancedOpen &&
-            (!streaming ? (
-              <button
-                className="recordButton"
-                onClick={() => startStreaming(false)}
-                disabled={loading || recording}
-                title="Solo transcribe en vivo (sin sugerencias)"
-              >
-                <Mic size={18} />
-                <span>Grabar en vivo</span>
-              </button>
-            ) : !liveAssist ? (
-              <button className="recordButton recording" onClick={stopStreaming}>
-                <Square size={18} />
-                <span>Detener stream</span>
-              </button>
-            ) : null)}
           <button
             className="primaryButton subtle"
             disabled={!audioBlob || loading}
@@ -1052,7 +1607,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             ) : (
               <FileText size={18} />
             )}
-            <span>Transcribir</span>
+            <span>Transcribir V1</span>
           </button>
           <button
             className="primaryButton"
@@ -1065,8 +1620,50 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             ) : (
               <Sparkles size={18} />
             )}
-            <span>Transcribir + Extraer</span>
+            <span>Transcribir + Extraer V1</span>
           </button>
+          <label className="advancedToggle">
+            <input
+              type="checkbox"
+              checked={advancedOpen}
+              onChange={(event) => setAdvancedOpen(event.target.checked)}
+            />
+            <span>Avanzado V1</span>
+          </label>
+          {/* Entrevista en vivo asistida: transcribe + sugiere incrementalmente */}
+          {!streaming ? (
+            <button
+              className="recordButton"
+              onClick={() => startStreaming(true)}
+              disabled={loading || recording}
+              title="Transcribe y propone sugerencias en vivo, a medida que avanza la entrevista"
+            >
+              <Sparkles size={18} />
+              <span>Entrevista en vivo V1</span>
+            </button>
+          ) : liveAssist ? (
+            <button className="recordButton recording" onClick={stopStreaming}>
+              <Square size={18} />
+              <span>Detener entrevista V1</span>
+            </button>
+          ) : null}
+          {advancedOpen &&
+            (!streaming ? (
+              <button
+                className="recordButton"
+                onClick={() => startStreaming(false)}
+                disabled={loading || recording}
+                title="Solo transcribe en vivo (sin sugerencias)"
+              >
+                <Mic size={18} />
+                <span>Grabar en vivo V1</span>
+              </button>
+            ) : !liveAssist ? (
+              <button className="recordButton recording" onClick={stopStreaming}>
+                <Square size={18} />
+                <span>Detener stream V1</span>
+              </button>
+            ) : null)}
           <button
             className="primaryButton subtle"
             disabled={
@@ -1088,6 +1685,166 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             <X size={18} />
             <span>Limpiar</span>
           </button>
+            </div>
+          </CollapsibleControlGroup>
+
+          <CollapsibleControlGroup
+            className="controlGroupV2"
+            title="V2 Browser"
+            hint="Preview offline sin timestamps clinicos"
+            open={v2ControlsOpen}
+            onToggle={() => setV2ControlsOpen((value) => !value)}
+          >
+            <div className="assistantToolbarV2">
+
+          <span className="toolbarSectionLabel" style={{ background: "#e0e7ff", color: "#4338ca" }}>
+            Modelo Whisper V2
+          </span>
+          <select
+            value={v2Model}
+            onChange={(e) => setV2Model(e.target.value)}
+            className="select"
+            title="Modelo Whisper ONNX para transcripcion en browser (V2)"
+            disabled={loading || v2Transcribing || v2ModelLoading}
+          >
+            <option value="Xenova/whisper-small">
+              whisper-small (~244MB, rapido)
+            </option>
+            <option value="Xenova/whisper-large-v3">
+              whisper-large-v3 (~1.5GB, preciso)
+            </option>
+          </select>
+          {!v2Recording ? (
+            <button
+              className="recordButton"
+              onClick={startRecordingV2}
+              disabled={loading || v2Transcribing}
+              title="Grabar y transcribir con Whisper ONNX en el navegador (sin servidor)"
+            >
+              <Mic size={18} />
+              <span>Grabar V2</span>
+            </button>
+          ) : (
+            <button className="recordButton recording" onClick={stopRecordingV2}>
+              <Square size={18} />
+              <span>Detener V2</span>
+            </button>
+          )}
+          <button
+            className="primaryButton"
+            disabled={!audioBlob || loading || v2Transcribing}
+            onClick={handleTranscribeAndExtractV2}
+            title="Transcribe con Whisper ONNX en browser + extrae sugerencias con backend LLM"
+          >
+            {v2Transcribing ? (
+              <Loader2 size={18} className="spin" />
+            ) : (
+              <Sparkles size={18} />
+            )}
+            <span>Transcribir + Extraer V2</span>
+          </button>
+          <button
+            className="primaryButton subtle"
+            disabled={!audioBlob || loading || v2Transcribing}
+            onClick={handleTranscribeBackendAndExtractV2}
+            title="Usa el backend de audio V1 para transcribir con Whisper/faster-whisper/WhisperX y luego extrae sugerencias"
+          >
+            {v2Transcribing ? (
+              <Loader2 size={18} className="spin" />
+            ) : (
+              <Sparkles size={18} />
+            )}
+            <span>Backend + Extraer V2</span>
+          </button>
+
+          <div className="toolbarDivider" />
+
+          <span className="toolbarSectionLabel" style={{ background: "#fce7f3", color: "#be185d" }}>
+            Modelo Vosk V2
+          </span>
+          <select
+            value={voskV2ModelSize}
+            onChange={(e) => setVoskV2ModelSize(e.target.value)}
+            className="select"
+            title="Modelo Vosk para streaming real-time en browser (V2)"
+            disabled={loading || voskV2Active || voskV2ModelLoading}
+          >
+            {Object.entries(VOSK_MODELS).map(([key, model]) => (
+              <option key={key} value={key} disabled={model.disabled}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+          {!voskV2Active ? (
+            <button
+              className="recordButton"
+              onClick={startVoskV2}
+              disabled={loading || v2Transcribing || v2Recording}
+              title="Entrevista en vivo con Vosk: transcripcion real-time en el navegador"
+            >
+              <Sparkles size={18} />
+              <span>Entrevista V2</span>
+            </button>
+          ) : (
+            <button
+              className="recordButton recording"
+              onClick={stopVoskV2}
+            >
+              <Square size={18} />
+              <span>Detener V2</span>
+            </button>
+          )}
+          <button
+            className="primaryButton"
+            disabled={
+              !voskV2Active &&
+              !(voskV2.finalText || voskV2.interimText).trim()
+            }
+            onClick={handleVoskV2TranscribeAndExtract}
+            title="Enviar texto acumulado de Vosk al backend LLM para extraer sugerencias"
+          >
+            {loading ? (
+              <Loader2 size={18} className="spin" />
+            ) : (
+              <Sparkles size={18} />
+            )}
+            <span>Extraer V2</span>
+          </button>
+            </div>
+            <div className="v2StatusStrip">
+              <span>
+                Whisper V2:{" "}
+                <strong>
+                  {v2ModelLoading
+                    ? `cargando ${transcriberV2.loadProgress > 0 ? `${Math.round(transcriberV2.loadProgress * 100)}%` : ""}`
+                    : v2Transcribing
+                      ? "transcribiendo"
+                      : v2Model.replace("Xenova/", "")}
+                </strong>
+              </span>
+              <span>
+                Vosk V2:{" "}
+                <strong>
+                  {voskV2ModelLoading
+                    ? `cargando ${voskV2ModelSize}`
+                    : voskV2Active
+                      ? "activo"
+                      : voskV2ModelSize}
+                </strong>
+              </span>
+              {(voskV2.finalText || voskV2.interimText) && (
+                <span className="v2LiveText">
+                  Live V2:{" "}
+                  <strong>
+                    {[voskV2.finalText, voskV2.interimText]
+                      .filter(Boolean)
+                      .join(" ")
+                      .trim()}
+                  </strong>
+                </span>
+              )}
+            </div>
+          </CollapsibleControlGroup>
         </div>
 
         {activeIaMeta && (
@@ -1232,7 +1989,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             }}
           >
             <span>
-              ● Stream activo {audioProvider ? `(${audioProvider})` : ""}
+              ● Stream activo {liveStreamProvider ? `(${liveStreamProvider})` : "(backend)"}
             </span>
             <span>
               chunks enviados: <strong>{streamChunks}</strong>
@@ -1251,6 +2008,58 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         {refining && (
           <div style={{ padding: "6px 24px", color: "#fbbf24", fontSize: 12 }}>
             ⟳ Refinando con modelo grande sobre audio completo...
+          </div>
+        )}
+
+        {(v2ModelLoading || v2Transcribing) && (
+          <div
+            style={{
+              padding: "6px 24px",
+              color: "var(--accent, #4ade80)",
+              fontSize: 12,
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+            }}
+          >
+            {v2ModelLoading && (
+              <span>
+                🧠 Cargando Whisper ONNX en browser...{" "}
+                {transcriberV2.loadProgress > 0
+                  ? `${Math.round(transcriberV2.loadProgress * 100)}%`
+                  : ""}
+              </span>
+            )}
+            {v2Transcribing && !v2ModelLoading && (
+              <span>⏳ Transcribiendo con Whisper ONNX (client-side)...</span>
+            )}
+          </div>
+        )}
+
+        {voskV2ModelLoading && (
+          <div
+            style={{
+              padding: "6px 24px",
+              color: "#a78bfa",
+              fontSize: 12,
+            }}
+          >
+            🧠 Cargando modelo Vosk ({voskV2ModelSize}) en browser...
+          </div>
+        )}
+
+        {voskV2Active && (
+          <div
+            style={{
+              padding: "6px 24px",
+              color: "#a78bfa",
+              fontSize: 12,
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+            }}
+          >
+            <span>● Vosk V2 activo (streaming real-time en browser)</span>
           </div>
         )}
 
@@ -1333,6 +2142,50 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
                   ● live
                 </span>
                 <span style={{ flex: 1 }}>{streamPartial}</span>
+              </div>
+            )}
+            {voskV2Active && (voskV2.interimText || voskV2.finalText) && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  border: "1px dashed #a78bfa",
+                  borderRadius: 8,
+                  background: "rgba(167, 139, 250, 0.06)",
+                  color: "var(--text)",
+                  fontSize: 14,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
+                }}
+              >
+                <span
+                  style={{ fontWeight: 700, color: "#a78bfa" }}
+                >
+                  ● V2 live
+                </span>
+                <span style={{ flex: 1 }}>
+                  {voskV2.finalText && (
+                    <span>{voskV2.finalText} </span>
+                  )}
+                  {voskV2.interimText && (
+                    <span style={{ fontStyle: "italic", opacity: 0.7 }}>
+                      {voskV2.interimText}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+            {voskV2.error && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "8px 12px",
+                  color: "var(--danger)",
+                  fontSize: 13,
+                }}
+              >
+                Vosk: {voskV2.error}
               </div>
             )}
             {transcript && transcript !== text && (
