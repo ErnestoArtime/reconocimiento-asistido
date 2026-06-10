@@ -10,9 +10,9 @@
 #   docker compose up -d --build
 #   docker compose logs -f api frontend
 #
-# Ollama NO se levanta dentro de Docker. Si quieres usar Ollama instalado en el
-# host, configura en .env:
-#   OLLAMA_BASE_URL=http://host.docker.internal:11434
+# Ollama NO se levanta dentro de Docker. Para ejecucion local directa, .env usa
+# 127.0.0.1. Dentro del contenedor api se sobreescribe con host.docker.internal.
+# Si necesitas otra URL Docker, define DOCKER_OLLAMA_BASE_URL en .env.
 # =============================================================================
 
 services:
@@ -26,6 +26,7 @@ services:
     env_file:
       - .env
     environment:
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       AUDIO_CACHE_DIR: /app/.cache/audio
       PERSISTENCE_DB_PATH: /app/var/reconocimiento.db
       AUDIT_LOG_PATH: /app/var/audit.log.jsonl
@@ -63,7 +64,7 @@ services:
       NODE_ENV: production
       NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://127.0.0.1:8000}
     ports:
-      - "3010:3010"
+      - "${FRONTEND_PORT:-3010}:3010"
     depends_on:
       api:
         condition: service_healthy
