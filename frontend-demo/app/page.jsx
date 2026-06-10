@@ -721,11 +721,33 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   function mergeLiveSuggestions(current, incoming, eventType) {
     const acceptedSet = new Set(accepted || []);
     const liveStatus = eventType === "suggestions.final" ? "final" : "partial";
-    const answerKey = (item) =>
-      JSON.stringify({
-        selectedCodes: [...(item.selectedCodes || [])].sort(),
-        freeText: item.freeText || "",
-      });
+    const sameAnswer = (left, right) =>
+      JSON.stringify([...(left.selectedCodes || [])].sort()) ===
+        JSON.stringify([...(right.selectedCodes || [])].sort()) &&
+      (left.freeText || "") === (right.freeText || "");
+    const isSupersetAnswer = (next, existing) => {
+      const existingCodes = new Set(existing.selectedCodes || []);
+      const nextCodes = new Set(next.selectedCodes || []);
+      if (!existingCodes.size || nextCodes.size < existingCodes.size) return false;
+      for (const code of existingCodes) if (!nextCodes.has(code)) return false;
+      return true;
+    };
+    const classifyUpdate = (existing, next) => {
+      if (sameAnswer(existing, next)) return "same";
+      if (
+        acceptedSet.has(existing.id) ||
+        existing.reviewStatus === "accepted" ||
+        existing.locked
+      ) {
+        return "conflict";
+      }
+      if (existing.liveStatus === "partial") return "refinement";
+      if (existing.questionType === "multiple" && isSupersetAnswer(next, existing)) {
+        return "enrichment";
+      }
+      if (existing.questionType === "text" || existing.freeText) return "revision";
+      return eventType === "suggestions.final" ? "conflict" : "revision";
+    };
     const incomingByQuestion = new Map(
       incoming.map((suggestion) => [suggestion.questionId, suggestion]),
     );
@@ -739,25 +761,54 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         existing.reviewStatus === "accepted" ||
         existing.locked
       ) {
-        merged.push(existing);
+        if (next && !sameAnswer(existing, next)) {
+          merged.push({
+            ...existing,
+            status: "conflict",
+            riskFlags: Array.from(new Set([...(existing.riskFlags || []), "conflict"])),
+            previousAnswer: {
+              selectedCodes: existing.selectedCodes || [],
+              freeText: existing.freeText || "",
+            },
+            proposedAnswer: {
+              selectedCodes: next.selectedCodes || [],
+              freeText: next.freeText || "",
+            },
+            previousEvidenceTurnIds: existing.evidenceTurnIds || [],
+          });
+        } else {
+          merged.push(existing);
+        }
         seen.add(existing.questionId);
         continue;
       }
       if (next) {
-        const evidenceTurnIds = Array.from(
-          new Set([
-            ...(existing.evidenceTurnIds || []),
-            ...(next.evidenceTurnIds || []),
-          ]),
-        );
-        const changedAnswer = answerKey(existing) !== answerKey(next);
+        const updateKind = classifyUpdate(existing, next);
+        const changedAnswer = !["same", "refinement", "enrichment"].includes(updateKind);
+        const evidenceTurnIds = changedAnswer
+          ? next.evidenceTurnIds || []
+          : Array.from(
+              new Set([
+                ...(existing.evidenceTurnIds || []),
+                ...(next.evidenceTurnIds || []),
+              ]),
+            );
+        const riskFlags =
+          updateKind === "conflict"
+            ? Array.from(new Set([...(next.riskFlags || []), "conflict"]))
+            : next.riskFlags || existing.riskFlags || [];
         merged.push({
           ...existing,
           ...next,
           id: existing.id,
           liveStatus,
           evidenceTurnIds,
-          status: changedAnswer ? "conflict" : next.status || existing.status,
+          previousEvidenceTurnIds: changedAnswer
+            ? existing.evidenceTurnIds || []
+            : existing.previousEvidenceTurnIds,
+          status: updateKind === "conflict" ? "conflict" : next.status || existing.status,
+          riskFlags,
+          updateKind,
           previousAnswer: changedAnswer
             ? {
                 selectedCodes: existing.selectedCodes || [],
@@ -832,6 +883,38 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     }
   }
 
+  async function runFinalReconciliation(finalText) {
+    const refinedText = (finalText || "").trim();
+    if (!refinedText) return;
+    try {
+      const data = await extractFromText({
+        module,
+        section: "*",
+        text: refinedText,
+        iaProvider: iaProvider || undefined,
+        iaModel: activeIaSupportsModel ? iaModel || undefined : undefined,
+      });
+      const items = (data.suggestions || []).map((raw) =>
+        adaptSuggestion(raw, data, questionsMap[raw.question_id]),
+      );
+      setSuggestions((current) =>
+        mergeLiveSuggestions(current, items, "suggestions.final"),
+      );
+      setClinicalSummary(data.clinical_summary || "");
+      setExtractStats({
+        client_ms: null,
+        provider_used: data.ia_provider_used || data.quality_report?.provider,
+        model_used: data.ia_model_used || data.quality_report?.model,
+        count: items.length,
+        quality_report: data.quality_report,
+        graph_report: data.graph_report,
+        live_event: "suggestions.refined",
+      });
+    } catch (err) {
+      setError("Reconciliacion final fallo: " + (err.message || err));
+    }
+  }
+
   async function startStreaming(assist = false) {
     setError("");
     setStreamPartial("");
@@ -870,6 +953,8 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             ready: "listo",
             audio_received: `audio recibido (${msg.chunks || 0} chunks)`,
             transcribing: msg.is_final ? "transcribiendo final" : "transcribiendo parcial",
+            "audio.done": "audio enviado; cerrando transcripcion",
+            "suggestions.finalizing": "finalizando sugerencias",
             extracting: "extrayendo sugerencias",
             extraction_error: "extraccion fallo; transcripcion sigue activa",
           };
@@ -952,7 +1037,9 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
       streamRef.current = handle;
       setStreaming(true);
       console.log("[ws] handle creado, esperando apertura...");
-      await handle.ready;
+      await handle.socketReady;
+      setStreamStatus("esperando backend");
+      await handle.backendReady;
       setStreamStatus("listo");
       if (audioCtxRef.current.state === "suspended") {
         await audioCtxRef.current.resume();
@@ -966,20 +1053,49 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         inputSampleRate,
         "downsample to 16000",
       );
-      const sendFloatChunk = (float) => {
-        if (!handle || !streamRef.current) return;
-        const ds = downsampleBuffer(float, inputSampleRate, 16000);
-        const pcm = floatTo16BitPCM(ds);
+      const frameSamples = 640; // 40 ms @ 16 kHz.
+      const pendingPcm = [];
+      let pendingSamples = 0;
+      const sendPcmFrame = (frame) => {
         try {
-          if (handle.sendChunk(pcm.buffer)) {
+          const payload = frame.buffer.slice(
+            frame.byteOffset,
+            frame.byteOffset + frame.byteLength,
+          );
+          if (handle.sendChunk(payload)) {
             setStreamChunks((n) => n + 1);
           }
         } catch (err) {
           console.error("[ws] sendChunk fail:", err);
         }
+      };
+      const flushPcmFrames = () => {
+        while (pendingSamples >= frameSamples) {
+          const frame = new Int16Array(frameSamples);
+          let written = 0;
+          while (written < frameSamples && pendingPcm.length) {
+            const head = pendingPcm[0];
+            const available = head.samples.length - head.offset;
+            const take = Math.min(frameSamples - written, available);
+            frame.set(head.samples.subarray(head.offset, head.offset + take), written);
+            head.offset += take;
+            written += take;
+            pendingSamples -= take;
+            if (head.offset >= head.samples.length) pendingPcm.shift();
+          }
+          sendPcmFrame(frame);
+        }
+      };
+      const sendFloatChunk = (float) => {
+        if (!handle || !streamRef.current) return;
+        const ds = downsampleBuffer(float, inputSampleRate, 16000);
+        const pcm = floatTo16BitPCM(ds);
         // copia local para refinamiento posterior
         const copy = new Uint8Array(pcm.buffer.slice(0));
         pcmFullRef.current.push(copy.buffer);
+        pendingPcm.push({ samples: pcm, offset: 0 });
+        pendingSamples += pcm.length;
+        flushPcmFrames();
       };
       if (audioCtxRef.current.audioWorklet) {
         await audioCtxRef.current.audioWorklet.addModule(
@@ -1062,6 +1178,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
           language: data.language,
         });
         setRefined(true);
+        await runFinalReconciliation(data.text);
       }
     } catch (err) {
       setError("Refinamiento fallo: " + (err.message || err));
@@ -1553,6 +1670,10 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     }
     setStreaming(false);
     setStreamStatus("idle");
+    setStreamPartial("");
+    liveAssistRef.current = false;
+    setLiveAssist(false);
+    setAssistExtracting(false);
     // dispara refinamiento con modelo grande (medium) sobre audio completo
     refineAfterStream();
   }

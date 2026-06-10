@@ -192,6 +192,8 @@ function isStreamStatusEvent(msg) {
     "ready",
     "audio_received",
     "transcribing",
+    "audio.done",
+    "suggestions.finalizing",
     "extracting",
     "extraction_error",
   ].includes(msg?.type);
@@ -201,7 +203,8 @@ function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
   let doneResolving = null;
   let closedIntentionally = false;
   const pendingChunks = [];
-  const ready = new Promise((resolve, reject) => {
+  let resolveBackendReady = null;
+  const socketReady = new Promise((resolve, reject) => {
     ws.addEventListener("open", () => {
       while (pendingChunks.length && ws.readyState === WebSocket.OPEN) {
         ws.send(pendingChunks.shift());
@@ -212,8 +215,12 @@ function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
       reject(new Error("ws error"));
     }, { once: true });
   });
+  const backendReady = new Promise((resolve) => {
+    resolveBackendReady = resolve;
+  });
 
   ws.addEventListener("close", () => {
+    if (resolveBackendReady) resolveBackendReady();
     if (doneResolving) doneResolving();
     if (!closedIntentionally) onClose && onClose();
   });
@@ -224,9 +231,14 @@ function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
 
   return {
     ws,
-    ready,
+    socketReady,
+    backendReady,
+    ready: backendReady,
     markIntentionalClose() {
       closedIntentionally = true;
+    },
+    markBackendReady() {
+      if (resolveBackendReady) resolveBackendReady();
     },
     resolveDone() {
       if (doneResolving) doneResolving();
@@ -293,8 +305,12 @@ export function openStreamingTranscription({
   ws.addEventListener("message", (ev) => {
     try {
       const msg = JSON.parse(ev.data);
-      if (msg.error) return onError && onError(msg.error);
+      if (msg.error) {
+        handle.markBackendReady();
+        return onError && onError(msg.error);
+      }
       if (isStreamStatusEvent(msg)) {
+        if (msg.type === "ready") handle.markBackendReady();
         onStatus && onStatus(msg);
         return;
       }
@@ -344,9 +360,11 @@ export function openStreamingAssist({
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === "error" || msg.error) {
+        handle.markBackendReady();
         return onError && onError(msg.error || "stream-and-extract error");
       }
       if (isStreamStatusEvent(msg)) {
+        if (msg.type === "ready") handle.markBackendReady();
         onStatus && onStatus(msg);
         onEvent && onEvent(msg);
         return;
@@ -373,7 +391,7 @@ export function openStreamingAssist({
   return {
     ...handle,
     stop() {
-      return handle.stop(10000);
+      return handle.stop(120000);
     },
   };
 }
