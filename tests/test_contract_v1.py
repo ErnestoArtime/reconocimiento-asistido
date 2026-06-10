@@ -36,9 +36,13 @@ class ContractV1Test(unittest.TestCase):
             selected_codes=["E1-32"],
             confidence=0.85,
             evidence="boca no es normal",
+            evidence_turn_ids=["t2"],
+            speaker_cluster="SPEAKER_01",
         )
         payload = json.loads(s.model_dump_json())
         self.assertEqual(payload["question_id"], "E1-3")
+        self.assertEqual(payload["evidence_turn_ids"], ["t2"])
+        self.assertEqual(payload["speaker_cluster"], "SPEAKER_01")
         self.assertEqual(payload["technical_status"], "valid")
         self.assertEqual(payload["review_status"], "pending")
         self.assertEqual(payload["risk_flags"], [])
@@ -97,9 +101,13 @@ class LegacyAdapterTest(unittest.TestCase):
             selected_codes=["C5-12"],
             confidence=0.9,
             evidence="no fuma",
+            evidence_turn_ids=["t1"],
+            speaker_cluster="SPEAKER_01",
         )
         v1 = legacy_to_v1(legacy)
         self.assertEqual(v1.question_id, "C5-1")
+        self.assertEqual(v1.evidence_turn_ids, ["t1"])
+        self.assertEqual(v1.speaker_cluster, "SPEAKER_01")
         self.assertEqual(v1.technical_status, "valid")
         self.assertEqual(v1.review_status, "pending")
         self.assertEqual(v1.risk_flags, [])

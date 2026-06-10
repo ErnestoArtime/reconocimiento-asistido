@@ -13,6 +13,7 @@ from app.services.audio.base import Segment, TranscriptResult  # noqa: E402
 from app.services.audio.extraction_v1 import (  # noqa: E402
     apply_audio_evidence_alignment,
     extraction_text_for_module,
+    transcript_turns_v1,
     transcription_meta_v1,
 )
 
@@ -51,6 +52,16 @@ class ExtractionTextForModuleTest(unittest.TestCase):
         )
         self.assertEqual(extraction_text_for_module(tr, "history"), "texto completo")
 
+    def test_transcript_turns_preserve_cluster_and_role(self) -> None:
+        turns = transcript_turns_v1(self._diarized())
+
+        self.assertEqual(turns[0].turn_id, "t1")
+        self.assertEqual(turns[0].speaker_cluster, "SPEAKER_00")
+        self.assertEqual(turns[0].speaker_role, "unknown")
+        self.assertEqual(turns[0].text, "Ha fumado?")
+        self.assertEqual(turns[1].turn_id, "t2")
+        self.assertEqual(turns[1].speaker_cluster, "SPEAKER_01")
+
     def test_empty_filter_falls_back_to_full(self) -> None:
         tr = TranscriptResult(
             text="Ha fumado?",
@@ -81,6 +92,7 @@ class AudioExtractionV1Test(unittest.TestCase):
 
         self.assertEqual(aligned.audio_start, 3.0)
         self.assertEqual(aligned.audio_end, 4.5)
+        self.assertEqual(aligned.evidence_turn_ids, ["t1"])
         self.assertNotIn("no_audio_timestamp", aligned.risk_flags)
 
     def test_apply_audio_evidence_alignment_flags_missing_timestamp(self) -> None:
@@ -139,6 +151,7 @@ class AudioExtractionV1Test(unittest.TestCase):
         ]
         [aligned] = apply_audio_evidence_alignment(suggestions, transcription)
         self.assertEqual(aligned.speaker, "paciente")
+        self.assertEqual(aligned.speaker_cluster, "paciente")
 
     def test_speaker_cluster_propagates_as_unknown(self) -> None:
         """SPEAKER_00 es cluster de diarizacion, no rol medico confirmado."""
@@ -158,6 +171,7 @@ class AudioExtractionV1Test(unittest.TestCase):
         ]
         [aligned] = apply_audio_evidence_alignment(suggestions, transcription)
         self.assertEqual(aligned.speaker, "unknown")
+        self.assertEqual(aligned.speaker_cluster, "SPEAKER_00")
 
     def test_speaker_not_propagated_when_mixed(self) -> None:
         """Ventana con dos speakers distintos → no propagar (consensus fails)."""
