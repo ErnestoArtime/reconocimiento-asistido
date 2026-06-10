@@ -300,8 +300,11 @@ function SuggestionCard({ suggestion, question, accepted, sequential, onAccept }
 
         {(suggestion.riskFlags?.length > 0 ||
           suggestion.previous ||
+          suggestion.liveStatus ||
+          suggestion.evidenceTurnIds?.length > 0 ||
           (suggestion.audioStart !== null && suggestion.audioEnd !== null) ||
-          suggestion.speaker) && (
+          suggestion.speaker ||
+          suggestion.speakerCluster) && (
           <Stack
             direction="row"
             flexWrap="wrap"
@@ -314,6 +317,15 @@ function SuggestionCard({ suggestion, question, accepted, sequential, onAccept }
                 size="small"
                 variant="outlined"
                 color="warning"
+                sx={{ height: 22 }}
+              />
+            )}
+            {suggestion.liveStatus && (
+              <Chip
+                label={suggestion.liveStatus === "final" ? "Final" : "Parcial"}
+                size="small"
+                variant="outlined"
+                color={suggestion.liveStatus === "final" ? "success" : "info"}
                 sx={{ height: 22 }}
               />
             )}
@@ -341,6 +353,22 @@ function SuggestionCard({ suggestion, question, accepted, sequential, onAccept }
             {suggestion.speaker && (
               <Chip
                 label={SPEAKER_LABELS[suggestion.speaker] || suggestion.speaker}
+                size="small"
+                variant="outlined"
+                sx={{ height: 22 }}
+              />
+            )}
+            {suggestion.speakerCluster && (
+              <Chip
+                label={suggestion.speakerCluster}
+                size="small"
+                variant="outlined"
+                sx={{ height: 22 }}
+              />
+            )}
+            {suggestion.evidenceTurnIds?.length > 0 && (
+              <Chip
+                label={`Turnos ${suggestion.evidenceTurnIds.join(", ")}`}
                 size="small"
                 variant="outlined"
                 sx={{ height: 22 }}
