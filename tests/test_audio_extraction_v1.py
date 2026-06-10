@@ -30,11 +30,19 @@ class ExtractionTextForModuleTest(unittest.TestCase):
 
     def test_history_keeps_all_turns_with_speaker_context(self) -> None:
         out = extraction_text_for_module(self._diarized(), "history")
-        self.assertEqual(out, "[unknown] Ha fumado?\n[unknown] No, lo deje hace anos.")
+        self.assertEqual(
+            out,
+            "[SPEAKER_00|role=unknown] Ha fumado?\n"
+            "[SPEAKER_01|role=unknown] No, lo deje hace anos.",
+        )
 
     def test_exam_keeps_all_turns_with_speaker_context(self) -> None:
         out = extraction_text_for_module(self._diarized(), "exam")
-        self.assertEqual(out, "[unknown] Ha fumado?\n[unknown] No, lo deje hace anos.")
+        self.assertEqual(
+            out,
+            "[SPEAKER_00|role=unknown] Ha fumado?\n"
+            "[SPEAKER_01|role=unknown] No, lo deje hace anos.",
+        )
 
     def test_no_diarization_returns_full_text(self) -> None:
         tr = TranscriptResult(
@@ -48,7 +56,10 @@ class ExtractionTextForModuleTest(unittest.TestCase):
             text="Ha fumado?",
             segments=[Segment(start=0.0, end=1.0, text="Ha fumado?", speaker="SPEAKER_00")],
         )
-        self.assertEqual(extraction_text_for_module(tr, "history"), "[unknown] Ha fumado?")
+        self.assertEqual(
+            extraction_text_for_module(tr, "history"),
+            "[SPEAKER_00|role=unknown] Ha fumado?",
+        )
 
 
 class AudioExtractionV1Test(unittest.TestCase):
