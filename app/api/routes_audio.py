@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -104,6 +105,46 @@ def _segments_from_turns(turns: list[dict[str, Any]]) -> list[Segment]:
         for turn in turns
         if str(turn.get("text") or "").strip()
     ]
+
+
+def _normalize_for_alignment(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\sáéíóúÁÉÍÓÚñÑüÜ]", " ", text).lower()).strip()
+
+
+def _apply_turn_evidence_metadata(
+    suggestions: list[Any],
+    turns_snapshot: tuple[dict[str, Any], ...],
+) -> list[Any]:
+    """Atribuye turnos/timestamps de forma determinista desde la evidencia."""
+    enriched = []
+    normalized_turns = [
+        (turn, _normalize_for_alignment(str(turn.get("text") or "")))
+        for turn in turns_snapshot
+    ]
+    for suggestion in suggestions:
+        evidence = _normalize_for_alignment(str(getattr(suggestion, "evidence", "") or ""))
+        matched = [
+            turn
+            for turn, normalized in normalized_turns
+            if evidence and evidence in normalized
+        ]
+        if not matched:
+            enriched.append(suggestion)
+            continue
+        clusters = {
+            turn.get("speaker_cluster")
+            for turn in matched
+            if turn.get("speaker_cluster")
+        }
+        updates: dict[str, Any] = {
+            "evidence_turn_ids": [str(turn["turn_id"]) for turn in matched if turn.get("turn_id")],
+            "audio_start": min(float(turn.get("start") or 0.0) for turn in matched),
+            "audio_end": max(float(turn.get("end") or 0.0) for turn in matched),
+        }
+        if len(clusters) == 1 and getattr(suggestion, "speaker_cluster", None) is None:
+            updates["speaker_cluster"] = next(iter(clusters))
+        enriched.append(suggestion.model_copy(update=updates))
+    return enriched
 
 
 @router.get("/providers")
@@ -452,7 +493,7 @@ async def stream(websocket: WebSocket) -> None:
                     requested_provider,
                 )
                 provider_name = settings.audio_stream_provider or settings.audio_provider
-        provider = get_streaming_provider(provider_name)
+        provider = await asyncio.to_thread(get_streaming_provider, provider_name)
         await websocket.send_json({"type": "ready", "provider": provider_name})
     except Exception as exc:  # noqa: BLE001
         logger.exception("[stream] provider init failed: %s", exc)
@@ -590,7 +631,7 @@ async def stream_and_extract(websocket: WebSocket) -> None:
             requested = get_provider(requested_provider)
             if not requested.supports_streaming:
                 provider_name = settings.audio_stream_provider or settings.audio_provider
-        provider = get_streaming_provider(provider_name)
+        provider = await asyncio.to_thread(get_streaming_provider, provider_name)
         await websocket.send_json({"type": "ready", "provider": provider_name})
     except Exception as exc:  # noqa: BLE001
         logger.exception("[stream_extract] provider init failed: %s", exc)
@@ -672,14 +713,23 @@ async def stream_and_extract(websocket: WebSocket) -> None:
             yield item
 
     async def emit_suggestions(event_type: str) -> None:
-        transcript = " ".join(turn["text"] for turn in turns if turn.get("text")).strip()
+        turns_snapshot = tuple(dict(turn) for turn in turns)
+        extraction_revision = len(turns_snapshot)
+        processed_through_turn_id = (
+            str(turns_snapshot[-1].get("turn_id")) if turns_snapshot else None
+        )
+        transcript = " ".join(
+            turn["text"] for turn in turns_snapshot if turn.get("text")
+        ).strip()
         if not transcript:
             return
         await send_event(
             {
                 "type": "extracting",
                 "event": event_type,
-                "turn_ids": [turn["turn_id"] for turn in turns],
+                "extraction_revision": extraction_revision,
+                "processed_through_turn_id": processed_through_turn_id,
+                "turn_ids": [turn["turn_id"] for turn in turns_snapshot],
             }
         )
         request = ExtractFromTextRequest(
@@ -688,9 +738,10 @@ async def stream_and_extract(websocket: WebSocket) -> None:
             text=transcript,
             ia_provider=ia_provider,
             ia_model=ia_model,
-            transcript_turns=turns,
+            transcript_turns=list(turns_snapshot),
         )
-        suggestions, _elapsed_ms, resolved_ia, model_used, clinical_summary = _extract_validated_suggestions(
+        suggestions, _elapsed_ms, resolved_ia, model_used, clinical_summary = await asyncio.to_thread(
+            _extract_validated_suggestions,
             request=request,
             questions=questions,
             engine=engine,
@@ -720,12 +771,13 @@ async def stream_and_extract(websocket: WebSocket) -> None:
 
         transcription = TranscriptResult(
             text=transcript,
-            segments=_segments_from_turns(turns),
+            segments=_segments_from_turns(list(turns_snapshot)),
             language=language,
             provider=provider_name,
             model=getattr(provider, "model", "") or getattr(provider, "model_size", "") or "",
         )
         v1_suggestions = apply_audio_evidence_alignment(v1_suggestions, transcription)
+        v1_suggestions = _apply_turn_evidence_metadata(v1_suggestions, turns_snapshot)
         v1_suggestions = apply_risk_flags(
             v1_suggestions,
             module=module,
@@ -754,7 +806,9 @@ async def stream_and_extract(websocket: WebSocket) -> None:
         await send_event(
             {
                 "type": event_type,
-                "processed_turn_ids": [turn["turn_id"] for turn in turns],
+                "extraction_revision": extraction_revision,
+                "processed_through_turn_id": processed_through_turn_id,
+                "processed_turn_ids": [turn["turn_id"] for turn in turns_snapshot],
                 "response": response.model_dump(mode="json"),
             }
         )
@@ -823,6 +877,8 @@ async def stream_and_extract(websocket: WebSocket) -> None:
                         "provider": provider_name,
                     }
                 )
+        await send_event({"type": "audio.done"})
+        await send_event({"type": "suggestions.finalizing"})
         await extraction_queue.put(None)
         await extractor_task
         await receiver_task
