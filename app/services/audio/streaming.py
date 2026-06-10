@@ -35,7 +35,7 @@ CHANNELS = 1
 class StreamConfig:
     partial_every_s: float = 1.5
     min_segment_s: float = 2.0
-    max_segment_s: float = 25.0
+    max_segment_s: float = 12.0
     silence_ms_to_close: int = 800
     language: str = "es"
     initial_prompt: str | None = None
@@ -158,8 +158,8 @@ class StreamingTranscriber:
 
         chunks: async iterator de bytes (PCM s16le 16kHz mono).
         """
-        self._segment_started_at = time.time()
-        self._last_partial_at = self._segment_started_at
+        self._segment_started_at = 0.0
+        self._last_partial_at = time.time()
         chunk_count = 0
         bytes_total = 0
         last_log = time.time()
@@ -189,8 +189,8 @@ class StreamingTranscriber:
                 if final:
                     logger.info("[stream] FINAL: %s", final.text[:80])
                     yield final
+                self._segment_started_at += dur
                 self._buffer.clear()
-                self._segment_started_at = now
                 self._last_partial_at = now
                 continue
 
@@ -207,8 +207,8 @@ class StreamingTranscriber:
                     if final:
                         logger.info("[stream] FINAL: %s", final.text[:80])
                         yield final
+                    self._segment_started_at += dur
                     self._buffer.clear()
-                    self._segment_started_at = now
                     self._last_partial_at = now
                     continue
 

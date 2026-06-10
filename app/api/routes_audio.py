@@ -34,6 +34,7 @@ from app.models.extraction_contract import ExtractionResponseV1
 from app.models.legacy_adapter import build_quality_report, legacy_to_v1
 from app.models.suggestion import ExtractFromTextResponse, ValidatedSuggestion
 from app.models.suggestion import ExtractFromTextRequest
+from app.services.audio.base import Segment, TranscriptResult
 from app.services.audio import available_providers, get_provider
 from app.services.audio.clinical_prompt import build_clinical_prompt
 from app.services.audio.extraction_v1 import (
@@ -77,6 +78,30 @@ def _enforce_audio_model_allowed(model: str | None, settings: Settings) -> None:
             status_code=400,
             detail=f"Modelo de audio no permitido: {model}. Permitidos: {settings.audio_allowed_models}",
         )
+
+
+def _turn_from_partial(index: int, partial) -> dict[str, Any]:
+    return {
+        "turn_id": f"t{index}",
+        "speaker_cluster": None,
+        "speaker_role": "unknown",
+        "start": partial.start,
+        "end": partial.end,
+        "text": partial.text.strip(),
+    }
+
+
+def _segments_from_turns(turns: list[dict[str, Any]]) -> list[Segment]:
+    return [
+        Segment(
+            start=float(turn.get("start") or 0.0),
+            end=float(turn.get("end") or 0.0),
+            text=str(turn.get("text") or ""),
+            speaker=turn.get("speaker_cluster"),
+        )
+        for turn in turns
+        if str(turn.get("text") or "").strip()
+    ]
 
 
 @router.get("/providers")
@@ -408,8 +433,12 @@ async def stream(websocket: WebSocket) -> None:
     language = qs.get("language") or settings.audio_language
 
     logger.info("[stream] cliente conectado provider=%s lang=%s", provider_name, language)
+    await websocket.send_json(
+        {"type": "connected", "provider": provider_name, "language": language}
+    )
 
     try:
+        await websocket.send_json({"type": "loading_model", "provider": provider_name})
         if (
             requested_provider
             and not settings.audio_stream_provider
@@ -422,6 +451,7 @@ async def stream(websocket: WebSocket) -> None:
                 )
                 provider_name = settings.audio_stream_provider or settings.audio_provider
         provider = get_streaming_provider(provider_name)
+        await websocket.send_json({"type": "ready", "provider": provider_name})
     except Exception as exc:  # noqa: BLE001
         logger.exception("[stream] provider init failed: %s", exc)
         await websocket.send_json({"error": f"provider invalido: {exc}"})
@@ -448,6 +478,8 @@ async def stream(websocket: WebSocket) -> None:
     transcriber = StreamingTranscriber(provider, cfg)
 
     async def chunks():
+        chunk_count = 0
+        byte_count = 0
         try:
             while True:
                 msg = await websocket.receive()
@@ -460,6 +492,16 @@ async def stream(websocket: WebSocket) -> None:
                         logger.info("[stream] received __end__ from client")
                         break
                     continue
+                chunk_count += 1
+                byte_count += len(data)
+                if chunk_count == 1 or chunk_count % 25 == 0:
+                    await websocket.send_json(
+                        {
+                            "type": "audio_received",
+                            "chunks": chunk_count,
+                            "bytes": byte_count,
+                        }
+                    )
                 yield data
         except WebSocketDisconnect:
             return
@@ -468,6 +510,16 @@ async def stream(websocket: WebSocket) -> None:
         async for partial in transcriber.consume(chunks()):
             await websocket.send_json(
                 {
+                    "type": "transcribing",
+                    "is_final": partial.is_final,
+                    "start": partial.start,
+                    "end": partial.end,
+                    "provider": provider_name,
+                }
+            )
+            await websocket.send_json(
+                {
+                    "type": "final" if partial.is_final else "partial",
                     "text": partial.text,
                     "is_final": partial.is_final,
                     "start": partial.start,
@@ -476,7 +528,7 @@ async def stream(websocket: WebSocket) -> None:
                 }
             )
         # Signal client that server finished flushing.
-        await websocket.send_json({"done": True})
+        await websocket.send_json({"type": "done", "done": True})
         logger.info("[stream] done sent to client")
     except WebSocketDisconnect:
         logger.info("[stream] client disconnected during processing")
@@ -485,6 +537,236 @@ async def stream(websocket: WebSocket) -> None:
         logger.exception("[stream] error: %s", exc)
         try:
             await websocket.send_json({"error": str(exc)})
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@v1_router.websocket("/stream-and-extract")
+async def stream_and_extract(websocket: WebSocket) -> None:
+    """Streaming v1: audio -> transcript turns -> sugerencias parciales/finales."""
+    await websocket.accept()
+    settings = get_settings()
+    qs = websocket.query_params
+    module = (qs.get("module") or "history").strip().lower()
+    if module not in {"history", "exam"}:
+        await websocket.send_json({"type": "error", "error": "module debe ser history|exam"})
+        await websocket.close()
+        return
+
+    try:
+        enforce_internal_api_key(settings, websocket.headers.get("x-internal-api-key"))
+    except Exception as exc:  # noqa: BLE001
+        await websocket.send_json({"type": "error", "error": str(exc)})
+        await websocket.close()
+        return
+
+    requested_provider = qs.get("provider")
+    provider_name = settings.audio_stream_provider or requested_provider or settings.audio_provider
+    language = qs.get("language") or settings.audio_language
+    section = qs.get("section")
+    ia_provider = qs.get("ia_provider")
+    ia_model = qs.get("ia_model")
+    await websocket.send_json(
+        {
+            "type": "connected",
+            "provider": provider_name,
+            "language": language,
+            "module": module,
+        }
+    )
+
+    try:
+        await websocket.send_json({"type": "loading_model", "provider": provider_name})
+        if requested_provider and not settings.audio_stream_provider:
+            requested = get_provider(requested_provider)
+            if not requested.supports_streaming:
+                provider_name = settings.audio_stream_provider or settings.audio_provider
+        provider = get_streaming_provider(provider_name)
+        await websocket.send_json({"type": "ready", "provider": provider_name})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[stream_extract] provider init failed: %s", exc)
+        await websocket.send_json({"type": "error", "error": f"provider invalido: {exc}"})
+        await websocket.close()
+        return
+
+    engine = get_questionnaire_engine()
+    ollama = get_ollama_provider()
+    cloudflare = get_cloudflare_provider()
+    questions, section_label = resolve_questions(
+        engine=engine,
+        module=module,
+        section=section,
+    )
+
+    try:
+        initial_prompt = build_clinical_prompt(
+            engine.data,
+            extra=settings.audio_initial_prompt,
+        )
+    except Exception:  # noqa: BLE001
+        initial_prompt = settings.audio_initial_prompt or None
+
+    cfg = StreamConfig(
+        partial_every_s=float(qs.get("partial_every_s", str(settings.audio_stream_partial_every_s))),
+        min_segment_s=float(qs.get("min_segment_s", str(settings.audio_stream_min_segment_s))),
+        max_segment_s=float(qs.get("max_segment_s", str(settings.audio_stream_max_segment_s))),
+        silence_ms_to_close=int(qs.get("silence_ms_to_close", str(settings.audio_stream_silence_ms))),
+        language=language,
+        initial_prompt=initial_prompt,
+    )
+    transcriber = StreamingTranscriber(provider, cfg)
+    turns: list[dict[str, Any]] = []
+
+    async def chunks():
+        chunk_count = 0
+        byte_count = 0
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                data = msg.get("bytes")
+                if data is None:
+                    text = msg.get("text")
+                    if text == "__end__":
+                        logger.info("[stream_extract] received __end__")
+                        break
+                    continue
+                chunk_count += 1
+                byte_count += len(data)
+                if chunk_count == 1 or chunk_count % 25 == 0:
+                    await websocket.send_json(
+                        {
+                            "type": "audio_received",
+                            "chunks": chunk_count,
+                            "bytes": byte_count,
+                        }
+                    )
+                yield data
+        except WebSocketDisconnect:
+            return
+
+    async def emit_suggestions(event_type: str) -> None:
+        transcript = " ".join(turn["text"] for turn in turns if turn.get("text")).strip()
+        if not transcript:
+            return
+        request = ExtractFromTextRequest(
+            module=module,  # type: ignore[arg-type]
+            section=section_label,
+            text=transcript,
+            ia_provider=ia_provider,
+            ia_model=ia_model,
+            transcript_turns=turns,
+        )
+        suggestions, _elapsed_ms, resolved_ia, model_used, clinical_summary = _extract_validated_suggestions(
+            request=request,
+            questions=questions,
+            engine=engine,
+            settings=settings,
+            ollama=ollama,
+            cloudflare=cloudflare,
+        )
+        v1_suggestions = [legacy_to_v1(suggestion) for suggestion in suggestions]
+        graph_report = build_graph_report(
+            module_entry_question_id=engine.data.get(module, {}).get("entry_question_id"),
+            questions=questions,
+            suggestions=v1_suggestions,
+        )
+        discarded_ids = {item["question_id"] for item in graph_report.discarded}
+        if discarded_ids and not is_module_wide(section_label):
+            v1_suggestions = [
+                suggestion.model_copy(
+                    update={
+                        "technical_status": "discarded_by_graph",
+                        "reason": "not_reachable_from_selected_path",
+                    }
+                )
+                if suggestion.question_id in discarded_ids
+                else suggestion
+                for suggestion in v1_suggestions
+            ]
+
+        transcription = TranscriptResult(
+            text=transcript,
+            segments=_segments_from_turns(turns),
+            language=language,
+            provider=provider_name,
+            model=getattr(provider, "model", "") or getattr(provider, "model_size", "") or "",
+        )
+        v1_suggestions = apply_audio_evidence_alignment(v1_suggestions, transcription)
+        v1_suggestions = apply_risk_flags(
+            v1_suggestions,
+            module=module,
+            provider=resolved_ia,
+            require_audio_timestamps=True,
+        )
+        response = ExtractionResponseV1(
+            module=module,  # type: ignore[arg-type]
+            section=section_label,
+            suggestions=v1_suggestions,
+            graph_report=graph_report,
+            quality_report=build_quality_report(
+                questions_considered=len(questions),
+                suggestions=v1_suggestions,
+                provider=resolved_ia,
+                model=model_used or "",
+                profile=getattr(settings, "deployment_profile", "demo") or "demo",
+                extra={
+                    "empty_generation_count": 1 if not v1_suggestions else 0,
+                    "missing_required": len(graph_report.missing_required),
+                },
+            ),
+            transcription=transcription_meta_v1(transcription),
+            clinical_summary=clinical_summary,
+        )
+        await websocket.send_json(
+            {
+                "type": event_type,
+                "processed_turn_ids": [turn["turn_id"] for turn in turns],
+                "response": response.model_dump(mode="json"),
+            }
+        )
+
+    try:
+        async for partial in transcriber.consume(chunks()):
+            await websocket.send_json(
+                {
+                    "type": "transcribing",
+                    "is_final": partial.is_final,
+                    "start": partial.start,
+                    "end": partial.end,
+                    "provider": provider_name,
+                }
+            )
+            if partial.is_final:
+                turn = _turn_from_partial(len(turns) + 1, partial)
+                turns.append(turn)
+                await websocket.send_json({"type": "transcript.final", "turn": turn})
+                await emit_suggestions("suggestions.partial")
+            else:
+                await websocket.send_json(
+                    {
+                        "type": "transcript.partial",
+                        "text": partial.text,
+                        "start": partial.start,
+                        "end": partial.end,
+                        "provider": provider_name,
+                    }
+                )
+        await emit_suggestions("suggestions.final")
+        await websocket.send_json({"type": "done"})
+    except WebSocketDisconnect:
+        logger.info("[stream_extract] client disconnected")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[stream_extract] error: %s", exc)
+        try:
+            await websocket.send_json({"type": "error", "error": str(exc)})
         except Exception:  # noqa: BLE001
             pass
     finally:
