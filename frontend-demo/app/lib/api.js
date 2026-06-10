@@ -185,12 +185,97 @@ export function pcmChunksToWavBlob(int16Chunks, sampleRate = 16000) {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-// WebSocket streaming. Devuelve un objeto { stop, ws } y dispara onPartial / onFinal / onError.
+function isStreamStatusEvent(msg) {
+  return [
+    "connected",
+    "loading_model",
+    "ready",
+    "audio_received",
+    "transcribing",
+  ].includes(msg?.type);
+}
+
+function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
+  let doneResolving = null;
+  let closedIntentionally = false;
+  const pendingChunks = [];
+  const ready = new Promise((resolve, reject) => {
+    ws.addEventListener("open", () => {
+      while (pendingChunks.length && ws.readyState === WebSocket.OPEN) {
+        ws.send(pendingChunks.shift());
+      }
+      resolve();
+    });
+    ws.addEventListener("error", () => {
+      reject(new Error("ws error"));
+    }, { once: true });
+  });
+
+  ws.addEventListener("close", () => {
+    if (doneResolving) doneResolving();
+    if (!closedIntentionally) onClose && onClose();
+  });
+  ws.addEventListener(
+    "error",
+    (err) => onError && onError(err.message || "ws error"),
+  );
+
+  return {
+    ws,
+    ready,
+    markIntentionalClose() {
+      closedIntentionally = true;
+    },
+    resolveDone() {
+      if (doneResolving) doneResolving();
+    },
+    sendChunk(arrayBuffer) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(arrayBuffer);
+        return true;
+      }
+      if (ws.readyState === WebSocket.CONNECTING) {
+        pendingChunks.push(arrayBuffer);
+        return true;
+      }
+      return false;
+    },
+    stop(timeoutMs = 5000) {
+      closedIntentionally = true;
+      try {
+        if (ws.readyState === WebSocket.OPEN) ws.send("__end__");
+      } catch {}
+      return new Promise((resolve) => {
+        doneResolving = resolve;
+        const timeout = setTimeout(() => {
+          doneResolving = null;
+          try {
+            ws.close();
+          } catch {}
+          resolve();
+        }, timeoutMs);
+        const origResolve = resolve;
+        doneResolving = () => {
+          clearTimeout(timeout);
+          origResolve();
+        };
+        if (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) {
+          clearTimeout(timeout);
+          doneResolving = null;
+          resolve();
+        }
+      });
+    },
+  };
+}
+
+// WebSocket streaming. Devuelve un objeto { stop, ws, ready } y dispara onPartial / onFinal / onError.
 export function openStreamingTranscription({
   provider,
   language = "es",
   onPartial,
   onFinal,
+  onStatus,
   onError,
   onClose,
 }) {
@@ -201,68 +286,92 @@ export function openStreamingTranscription({
   const ws = new WebSocket(`${wsBase}/api/audio/stream?${qs.toString()}`);
   ws.binaryType = "arraybuffer";
 
-  let doneResolving = null;
-  let closedIntentionally = false;
+  const handle = createQueuedSocketHandle(ws, { onError, onClose });
 
   ws.addEventListener("message", (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.error) return onError && onError(msg.error);
-      if (msg.done) {
-        if (doneResolving) doneResolving();
+      if (isStreamStatusEvent(msg)) {
+        onStatus && onStatus(msg);
+        return;
+      }
+      if (msg.done || msg.type === "done") {
+        handle.resolveDone();
         return;
       }
       if (msg.is_final) onFinal && onFinal(msg);
-      else onPartial && onPartial(msg);
+      else if (msg.text) onPartial && onPartial(msg);
     } catch (err) {
       onError && onError(err.message || String(err));
     }
   });
-  ws.addEventListener("close", () => {
-    if (doneResolving) doneResolving();
-    if (!closedIntentionally) onClose && onClose();
-  });
-  ws.addEventListener(
-    "error",
-    (err) => onError && onError(err.message || "ws error"),
-  );
-  return {
-    ws,
-    sendChunk(arrayBuffer) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(arrayBuffer);
-        return true;
+  return handle;
+}
+
+// WebSocket v1: audio streaming + extraccion incremental en backend.
+export function openStreamingAssist({
+  provider,
+  language = "es",
+  module = "history",
+  section,
+  iaProvider,
+  iaModel,
+  onEvent,
+  onPartial,
+  onFinal,
+  onSuggestions,
+  onStatus,
+  onError,
+  onClose,
+}) {
+  const wsBase = API_BASE.replace(/^http/, "ws");
+  const qs = new URLSearchParams();
+  qs.set("module", module);
+  if (!isModuleWide(section)) qs.set("section", section);
+  if (provider) qs.set("provider", provider);
+  if (language) qs.set("language", language);
+  if (iaProvider) qs.set("ia_provider", iaProvider);
+  if (iaModel) qs.set("ia_model", iaModel);
+  const ws = new WebSocket(`${wsBase}/api/v1/audio/stream-and-extract?${qs.toString()}`);
+  ws.binaryType = "arraybuffer";
+
+  const handle = createQueuedSocketHandle(ws, { onError, onClose });
+
+  ws.addEventListener("message", (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "error" || msg.error) {
+        return onError && onError(msg.error || "stream-and-extract error");
       }
-      return false;
-    },
+      if (isStreamStatusEvent(msg)) {
+        onStatus && onStatus(msg);
+        onEvent && onEvent(msg);
+        return;
+      }
+      if (msg.type === "done") {
+        handle.resolveDone();
+        return;
+      }
+      if (msg.type === "transcript.partial") {
+        onPartial && onPartial(msg);
+      } else if (msg.type === "transcript.final") {
+        onFinal && onFinal({ ...(msg.turn || {}), text: msg.turn?.text || "" });
+      } else if (
+        msg.type === "suggestions.partial" ||
+        msg.type === "suggestions.final"
+      ) {
+        onSuggestions && onSuggestions(msg);
+      }
+      onEvent && onEvent(msg);
+    } catch (err) {
+      onError && onError(err.message || String(err));
+    }
+  });
+  return {
+    ...handle,
     stop() {
-      closedIntentionally = true;
-      try {
-        if (ws.readyState === WebSocket.OPEN) ws.send("__end__");
-      } catch {}
-      // Wait up to 5s for server to flush buffer and send final result.
-      return new Promise((resolve) => {
-        doneResolving = resolve;
-        const timeout = setTimeout(() => {
-          doneResolving = null;
-          try {
-            ws.close();
-          } catch {}
-          resolve();
-        }, 5000);
-        // If the socket closes before timeout, the close handler resolves too.
-        const origResolve = resolve;
-        doneResolving = () => {
-          clearTimeout(timeout);
-          origResolve();
-        };
-        // If already closed (e.g. server closed first), resolve immediately.
-        if (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) {
-          clearTimeout(timeout);
-          doneResolving = null;
-          resolve();
-        }
-      });
+      return handle.stop(10000);
     },
   };
 }
@@ -448,6 +557,7 @@ export function adaptSuggestion(raw, responseContext = {}, question = null) {
     freeText: raw.free_text || null,
     confidence: raw.confidence,
     evidence: raw.evidence,
+    evidenceTurnIds: raw.evidence_turn_ids || [],
     status:
       raw.status ||
       (raw.technical_status === "discarded_by_graph" ? "conflict" : "suggested"),
@@ -457,6 +567,7 @@ export function adaptSuggestion(raw, responseContext = {}, question = null) {
     audioStart: raw.audio_start ?? null,
     audioEnd: raw.audio_end ?? null,
     speaker: raw.speaker || null,
+    speakerCluster: raw.speaker_cluster || null,
     reason: raw.reason || null,
   };
 }

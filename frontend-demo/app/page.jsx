@@ -35,6 +35,7 @@ import {
   fetchAudioProviders,
   fetchIaProviders,
   fetchSections,
+  openStreamingAssist,
   openStreamingTranscription,
   pcmChunksToWavBlob,
   suggestionToAssistantFindings,
@@ -325,10 +326,12 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   const [streamPartial, setStreamPartial] = useState("");
   const [streamChunks, setStreamChunks] = useState(0);
   const [streamMsgs, setStreamMsgs] = useState(0);
+  const [streamStatus, setStreamStatus] = useState("idle");
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
   const processorRef = useRef(null);
   const workletNodeRef = useRef(null);
+  const silentGainRef = useRef(null);
   const sourceRef = useRef(null);
   const liveStreamRef = useRef(null);
   const pcmFullRef = useRef([]); // acumula chunks PCM completos para refinar al detener
@@ -715,6 +718,47 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   // Extracción incremental durante la entrevista asistida. Re-extrae sobre el
   // transcript acumulado (módulo completo). Debounce: si hay una en vuelo, marca
   // pendiente y reencola al terminar -> coalesce de varios finales seguidos.
+  function mergeLiveSuggestions(current, incoming, eventType) {
+    const acceptedSet = new Set(accepted || []);
+    const incomingByQuestion = new Map(
+      incoming.map((suggestion) => [suggestion.questionId, suggestion]),
+    );
+    const merged = [];
+    const seen = new Set();
+
+    for (const existing of current || []) {
+      const next = incomingByQuestion.get(existing.questionId);
+      if (acceptedSet.has(existing.id)) {
+        merged.push(existing);
+        seen.add(existing.questionId);
+        continue;
+      }
+      if (next) {
+        merged.push({
+          ...next,
+          id: existing.id,
+          liveStatus: eventType === "suggestions.final" ? "final" : "partial",
+        });
+        seen.add(existing.questionId);
+        continue;
+      }
+      if (eventType !== "suggestions.final") {
+        merged.push(existing);
+        seen.add(existing.questionId);
+      }
+    }
+
+    for (const item of incoming) {
+      if (seen.has(item.questionId)) continue;
+      merged.push({
+        ...item,
+        liveStatus: eventType === "suggestions.final" ? "final" : "partial",
+      });
+    }
+
+    return merged;
+  }
+
   async function runAssistExtract() {
     if (assistBusyRef.current) {
       assistPendingRef.current = true;
@@ -736,7 +780,11 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         adaptSuggestion(raw, data, questionsMap[raw.question_id]),
       );
       // Re-extracción autoritativa sobre todo el texto -> reemplaza el set.
-      setSuggestions(items);
+      setSuggestions((current) =>
+        liveAssistRef.current
+          ? mergeLiveSuggestions(current, items, "suggestions.partial")
+          : items,
+      );
       setClinicalSummary(data.clinical_summary || "");
       setExtractStats({
         client_ms: null,
@@ -765,6 +813,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     setRefined(false);
     setStreamChunks(0);
     setStreamMsgs(0);
+    setStreamStatus("conectando");
     streamGotMsgRef.current = false;
     streamTextRef.current = "";
     pcmFullRef.current = [];
@@ -773,17 +822,31 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     assistBusyRef.current = false;
     assistPendingRef.current = false;
     setLiveAssist(assist);
+    let handle = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       liveStreamRef.current = stream;
       audioCtxRef.current = new (
         window.AudioContext || window.webkitAudioContext
       )();
-      sourceRef.current = audioCtxRef.current.createMediaStreamSource(stream);
 
-      const handle = openStreamingTranscription({
+      handle = (assist ? openStreamingAssist : openStreamingTranscription)({
         provider: liveStreamProvider,
         language: "es",
+        module,
+        section: "*",
+        iaProvider: iaProvider || undefined,
+        iaModel: activeIaSupportsModel ? iaModel || undefined : undefined,
+        onStatus: (msg) => {
+          const labels = {
+            connected: "conectado",
+            loading_model: "cargando modelo",
+            ready: "listo",
+            audio_received: `audio recibido (${msg.chunks || 0} chunks)`,
+            transcribing: msg.is_final ? "transcribiendo final" : "transcribiendo parcial",
+          };
+          setStreamStatus(labels[msg.type] || msg.type || "activo");
+        },
         onPartial: (msg) => {
           console.log("[ws] partial:", msg.text);
           streamGotMsgRef.current = true;
@@ -814,9 +877,28 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               assistTextRef.current = assistTextRef.current
                 ? assistTextRef.current + " " + msg.text.trim()
                 : msg.text.trim();
-              runAssistExtract();
+              if (!assist) runAssistExtract();
             }
           }
+        },
+        onSuggestions: (msg) => {
+          const data = msg.response || {};
+          const items = (data.suggestions || []).map((raw) =>
+            adaptSuggestion(raw, data, questionsMap[raw.question_id]),
+          );
+          setSuggestions((current) =>
+            mergeLiveSuggestions(current, items, msg.type),
+          );
+          setClinicalSummary(data.clinical_summary || "");
+          setExtractStats({
+            client_ms: null,
+            provider_used: data.quality_report?.provider,
+            model_used: data.quality_report?.model,
+            count: items.length,
+            quality_report: data.quality_report,
+            graph_report: data.graph_report,
+            live_event: msg.type,
+          });
         },
         onError: (e) => {
           console.error("[ws] error:", e);
@@ -829,7 +911,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
           setLiveAssist(false);
           // Extracción final sobre todo el transcript acumulado (cubre huecos
           // de los segmentos sueltos / contexto cruzado).
-          if (assistTextRef.current.trim()) runAssistExtract();
+          if (!assist && assistTextRef.current.trim()) runAssistExtract();
           if (!streamGotMsgRef.current) {
             setError(
               "Streaming cerrado sin respuesta del backend. La ruta " +
@@ -840,7 +922,15 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         },
       });
       streamRef.current = handle;
-      console.log("[ws] handle creado, esperando audio...");
+      setStreaming(true);
+      console.log("[ws] handle creado, esperando apertura...");
+      await handle.ready;
+      setStreamStatus("listo");
+      if (audioCtxRef.current.state === "suspended") {
+        await audioCtxRef.current.resume();
+      }
+      sourceRef.current = audioCtxRef.current.createMediaStreamSource(stream);
+      console.log("[ws] socket abierto, enviando audio...");
 
       const inputSampleRate = audioCtxRef.current.sampleRate;
       console.log(
@@ -870,12 +960,16 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         workletNodeRef.current = new AudioWorkletNode(
           audioCtxRef.current,
           "audio-capture-processor",
-          { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 },
+          { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 },
         );
         workletNodeRef.current.port.onmessage = (event) => {
           sendFloatChunk(event.data);
         };
+        silentGainRef.current = audioCtxRef.current.createGain();
+        silentGainRef.current.gain.value = 0;
         sourceRef.current.connect(workletNodeRef.current);
+        workletNodeRef.current.connect(silentGainRef.current);
+        silentGainRef.current.connect(audioCtxRef.current.destination);
       } else {
         processorRef.current = audioCtxRef.current.createScriptProcessor(
           4096,
@@ -888,9 +982,27 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         sourceRef.current.connect(processorRef.current);
         processorRef.current.connect(audioCtxRef.current.destination);
       }
-      setStreaming(true);
     } catch (err) {
       setError("No se pudo iniciar streaming: " + (err.message || err));
+      setStreaming(false);
+      setStreamStatus("error");
+      try {
+        handle && handle.stop && (await handle.stop());
+        processorRef.current && processorRef.current.disconnect();
+        workletNodeRef.current && workletNodeRef.current.disconnect();
+        silentGainRef.current && silentGainRef.current.disconnect();
+        sourceRef.current && sourceRef.current.disconnect();
+        audioCtxRef.current && audioCtxRef.current.close();
+        liveStreamRef.current &&
+          liveStreamRef.current.getTracks().forEach((t) => t.stop());
+      } catch {}
+      processorRef.current = null;
+      workletNodeRef.current = null;
+      silentGainRef.current = null;
+      sourceRef.current = null;
+      audioCtxRef.current = null;
+      liveStreamRef.current = null;
+      streamRef.current = null;
     }
   }
 
@@ -1392,6 +1504,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     try {
       processorRef.current && processorRef.current.disconnect();
       workletNodeRef.current && workletNodeRef.current.disconnect();
+      silentGainRef.current && silentGainRef.current.disconnect();
       sourceRef.current && sourceRef.current.disconnect();
       audioCtxRef.current && audioCtxRef.current.close();
       liveStreamRef.current &&
@@ -1399,6 +1512,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     } catch {}
     processorRef.current = null;
     workletNodeRef.current = null;
+    silentGainRef.current = null;
     sourceRef.current = null;
     audioCtxRef.current = null;
     liveStreamRef.current = null;
@@ -1410,6 +1524,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
       } catch {}
     }
     setStreaming(false);
+    setStreamStatus("idle");
     // dispara refinamiento con modelo grande (medium) sobre audio completo
     refineAfterStream();
   }
@@ -1996,6 +2111,9 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             </span>
             <span>
               mensajes recibidos: <strong>{streamMsgs}</strong>
+            </span>
+            <span>
+              estado: <strong>{streamStatus}</strong>
             </span>
             {streamMsgs === 0 && streamChunks > 20 && (
               <span style={{ opacity: 0.75 }}>
