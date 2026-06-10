@@ -1,0 +1,13 @@
+# Stack audio ligero para imagen Docker CPU.
+# Incluye transcripcion local con faster-whisper, sin diarizacion WhisperX/
+# pyannote ni torch. Para diarizacion/GPU usar requirements-audio.txt con
+# Dockerfile.gpu.
+
+faster-whisper>=1.0.3
+ctranslate2>=4.4
+av>=12.0.0
+soundfile>=0.12.1
+numpy>=1.26
+python-multipart>=0.0.9
+webrtcvad-wheels>=2.0.14
+jiwer>=3.0.4
