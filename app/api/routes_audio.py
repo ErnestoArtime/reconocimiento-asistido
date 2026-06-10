@@ -39,6 +39,7 @@ from app.services.audio.clinical_prompt import build_clinical_prompt
 from app.services.audio.extraction_v1 import (
     apply_audio_evidence_alignment,
     extraction_text_for_module,
+    transcript_turns_v1,
     transcription_meta_v1,
 )
 from app.services.audio.registry import get_streaming_provider
@@ -318,6 +319,10 @@ async def transcribe_and_extract_v1(
         text=extraction_text_for_module(transcription, module),
         ia_provider=ia_provider,
         ia_model=ia_model,
+        transcript_turns=[
+            turn.model_dump(exclude_none=True)
+            for turn in transcript_turns_v1(transcription)
+        ],
     )
     suggestions, _elapsed_ms, resolved_ia, model_used, clinical_summary = _extract_validated_suggestions(
         request=request,

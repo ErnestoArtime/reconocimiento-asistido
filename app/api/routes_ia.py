@@ -166,7 +166,11 @@ def _extract_validated_suggestions(
 
     # Solo se pasa cuando hay resumen: mantiene compatibilidad con extractores
     # (fakes/tests) cuya firma de extract no acepta clinical_context.
-    extract_extra = {"clinical_context": clinical_context} if clinical_context else {}
+    extract_extra = {}
+    if clinical_context:
+        extract_extra["clinical_context"] = clinical_context
+    if request.transcript_turns:
+        extract_extra["transcript_turns"] = request.transcript_turns
 
     raw_suggestions = []
     started = time.perf_counter()
@@ -203,6 +207,7 @@ def _extract_validated_suggestions(
                 batch_size=batch_size,
                 extractor=active_ollama.extract,
                 max_workers=1,
+                extractor_kwargs=extract_extra,
             )
         else:
             llm_suggestions = active_ollama.extract(
@@ -231,6 +236,7 @@ def _extract_validated_suggestions(
                 batch_size=batch_size,
                 extractor=active_cloudflare.extract,
                 max_workers=batch_workers,
+                extractor_kwargs=extract_extra,
             )
         else:
             cf_suggestions = active_cloudflare.extract(
