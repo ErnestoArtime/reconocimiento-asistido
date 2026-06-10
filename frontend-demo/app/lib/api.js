@@ -434,7 +434,7 @@ export function adaptSuggestion(raw, responseContext = {}, question = null) {
     raw.selected_labels && raw.selected_labels.length > 0
       ? raw.selected_labels.join(", ")
       : raw.free_text || "(sin valor)";
-  const backendSection = raw.section || responseContext.section;
+  const backendSection = raw.section || question?.section || responseContext.section;
   return {
     id: `${raw.question_id}-${Math.random().toString(36).slice(2, 8)}`,
     sectionId: uiSectionFromBackend(backendSection),

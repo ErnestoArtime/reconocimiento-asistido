@@ -25,6 +25,8 @@ export function useTranscriberV2() {
   const workerRef = useRef(null);
   const audioCtxRef = useRef(null);
   const modelReadyPromiseRef = useRef(null);
+  const loadedModelRef = useRef(null);
+  const loadingModelRef = useRef(null);
   const [isReady, setIsReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
@@ -51,6 +53,7 @@ export function useTranscriberV2() {
         setIsLoading(true);
         setIsReady(false);
         setLoadProgress(0);
+        loadingModelRef.current = modelName;
 
         const w = createWorker();
         workerRef.current = w;
@@ -63,14 +66,17 @@ export function useTranscriberV2() {
               break;
             case "model-ready":
               setIsReady(true);
+              loadedModelRef.current = modelName;
               setIsLoading(false);
               setLoadProgress(1);
               modelReadyPromiseRef.current = null;
+              loadingModelRef.current = null;
               resolve();
               break;
             case "error":
               setIsLoading(false);
               modelReadyPromiseRef.current = null;
+              loadingModelRef.current = null;
               reject(new Error(data.error));
               break;
           }
@@ -84,8 +90,10 @@ export function useTranscriberV2() {
 
   const ensureModelReady = useCallback(
     async (modelName) => {
-      if (isReady) return;
-      if (modelReadyPromiseRef.current) return modelReadyPromiseRef.current;
+      if (isReady && loadedModelRef.current === modelName) return;
+      if (modelReadyPromiseRef.current && loadingModelRef.current === modelName) {
+        return modelReadyPromiseRef.current;
+      }
       modelReadyPromiseRef.current = initWorker(modelName);
       return modelReadyPromiseRef.current;
     },
@@ -173,6 +181,8 @@ export function useTranscriberV2() {
     setIsLoading(false);
     setLoadProgress(0);
     modelReadyPromiseRef.current = null;
+    loadedModelRef.current = null;
+    loadingModelRef.current = null;
   }, []);
 
   return {

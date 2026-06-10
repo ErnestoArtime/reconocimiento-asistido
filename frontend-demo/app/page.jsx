@@ -301,7 +301,7 @@ function CollapsibleControlGroup({
 }
 
 function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
-  const [module, setModule] = useState("exam");
+  const [module, setModule] = useState("history");
   const [sectionsList, setSectionsList] = useState([]);
   const [section, setSection] = useState(""); // "" = Todas (entrevista libre)
   const [text, setText] = useState("");

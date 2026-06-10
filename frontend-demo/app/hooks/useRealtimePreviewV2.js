@@ -9,40 +9,6 @@ export const VOSK_MODELS = {
   large: { label: "Vosk Large (~1.4GB, preciso)", size: "large" },
 };
 
-function clearVoskIDB() {
-  return new Promise((resolve) => {
-    if (typeof indexedDB === "undefined") {
-      resolve();
-      return;
-    }
-    const dbs = indexedDB.databases ? indexedDB.databases() : Promise.resolve([]);
-    dbs
-      .then((databases) => {
-        const voskDBs = databases.filter((db) => db.name && db.name.includes("vosk"));
-        if (voskDBs.length === 0) {
-          resolve();
-          return;
-        }
-        let pending = voskDBs.length;
-        const done = () => {
-          pending -= 1;
-          if (pending <= 0) resolve();
-        };
-        voskDBs.forEach((db) => {
-          if (!db.name) {
-            done();
-            return;
-          }
-          const req = indexedDB.deleteDatabase(db.name);
-          req.onsuccess = done;
-          req.onerror = done;
-          req.onblocked = done;
-        });
-      })
-      .catch(() => resolve());
-  });
-}
-
 export function useRealtimePreviewV2() {
   const [isSupported, setIsSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -66,8 +32,6 @@ export function useRealtimePreviewV2() {
       const modelUrl = `/models/vosk/model-${voskModelSize}.tar.gz`;
       const wasmUrl = "/models/vosk/vosk.wasm";
       const workerUrl = "/models/vosk/vosk.worker.js?v=3";
-
-      await clearVoskIDB();
 
       const model = new VoskClient({ modelUrl, wasmUrl, workerUrl });
       const client = await new Promise((resolve, reject) => {
