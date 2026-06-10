@@ -98,6 +98,10 @@ def get_streaming_provider(name: str | None = None) -> TranscriptionProvider:
         except Exception:
             pass
     shadow.audio_model = settings.audio_stream_model
+    if hasattr(shadow, "audio_beam_size"):
+        shadow.audio_beam_size = 1
+    if hasattr(shadow, "audio_vad_filter"):
+        shadow.audio_vad_filter = False
     logger.info(
         "Cargando provider streaming: %s model=%s", chosen, settings.audio_stream_model
     )

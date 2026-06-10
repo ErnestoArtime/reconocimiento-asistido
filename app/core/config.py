@@ -183,6 +183,12 @@ class Settings:
         self.audio_fallback_provider = os.getenv(
             "AUDIO_FALLBACK_PROVIDER", "faster_whisper"
         ).strip().lower()
+        self.audio_model_cache_dir = os.getenv("AUDIO_MODEL_CACHE_DIR", "").strip()
+        self.audio_offline_mode = _env_bool("AUDIO_OFFLINE_MODE", False)
+        self.whisperx_diarization_model = os.getenv(
+            "WHISPERX_DIARIZATION_MODEL", ""
+        ).strip()
+        self.whisperx_hf_token = os.getenv("HF_TOKEN", "").strip()
 
         # --- Streaming dedicado (modelo mas pequeno = mas rapido para tiempo real) ---
         self.audio_stream_model = os.getenv("AUDIO_STREAM_MODEL", "").strip() or None

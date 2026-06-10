@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from inspect import signature
 
 from app.core.config import Settings
 from app.services.audio.base import Segment, TranscriptionProvider, TranscriptResult
@@ -27,8 +28,18 @@ class WhisperXProvider(TranscriptionProvider):
         device: str = "cuda",
         compute_type: str = "float16",
         hf_token: str | None = None,
+        diarization_model: str | None = None,
+        offline_mode: bool = False,
+        cache_dir: str | None = None,
         batch_size: int = 16,
     ) -> None:
+        if cache_dir:
+            os.environ.setdefault("HF_HOME", cache_dir)
+            os.environ.setdefault("HUGGINGFACE_HUB_CACHE", cache_dir)
+        if offline_mode:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
         import whisperx  # type: ignore
 
         self._whisperx = whisperx
@@ -36,6 +47,7 @@ class WhisperXProvider(TranscriptionProvider):
         self.device = device
         self.compute_type = compute_type
         self.hf_token = hf_token
+        self.diarization_model = diarization_model
         self.batch_size = batch_size
 
         logger.info("Cargando WhisperX %s device=%s", model_size, device)
@@ -55,11 +67,26 @@ class WhisperXProvider(TranscriptionProvider):
     def _get_diarizer(self):
         if self._diarizer is not None:
             return self._diarizer
-        if not self.hf_token:
-            raise RuntimeError("HF_TOKEN requerido para pyannote diarization")
-        self._diarizer = self._whisperx.DiarizationPipeline(
-            use_auth_token=self.hf_token, device=self.device
-        )
+        if not self.hf_token and not self.diarization_model:
+            raise RuntimeError(
+                "HF_TOKEN o WHISPERX_DIARIZATION_MODEL local requerido para diarizacion"
+            )
+        pipeline_cls = self._whisperx.DiarizationPipeline
+        params = signature(pipeline_cls).parameters
+        kwargs = {"device": self.device}
+        if self.hf_token and "use_auth_token" in params:
+            kwargs["use_auth_token"] = self.hf_token
+        if self.diarization_model:
+            if "model_name" in params:
+                kwargs["model_name"] = self.diarization_model
+            elif "model" in params:
+                kwargs["model"] = self.diarization_model
+            else:
+                logger.warning(
+                    "WhisperX DiarizationPipeline no expone parametro para modelo local; "
+                    "se intentara pipeline por defecto"
+                )
+        self._diarizer = pipeline_cls(**kwargs)
         return self._diarizer
 
     def transcribe(
@@ -171,5 +198,8 @@ def build_whisperx(settings: Settings) -> TranscriptionProvider:
         model_size=settings.audio_model,
         device=settings.audio_device if settings.audio_device != "auto" else "cuda",
         compute_type=settings.audio_compute_type if settings.audio_compute_type != "auto" else "float16",
-        hf_token=os.getenv("HF_TOKEN") or None,
+        hf_token=settings.whisperx_hf_token or None,
+        diarization_model=settings.whisperx_diarization_model or None,
+        offline_mode=settings.audio_offline_mode,
+        cache_dir=settings.audio_model_cache_dir or None,
     )
