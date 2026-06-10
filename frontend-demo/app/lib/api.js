@@ -192,6 +192,8 @@ function isStreamStatusEvent(msg) {
     "ready",
     "audio_received",
     "transcribing",
+    "extracting",
+    "extraction_error",
   ].includes(msg?.type);
 }
 

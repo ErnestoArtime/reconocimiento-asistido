@@ -720,6 +720,12 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   // pendiente y reencola al terminar -> coalesce de varios finales seguidos.
   function mergeLiveSuggestions(current, incoming, eventType) {
     const acceptedSet = new Set(accepted || []);
+    const liveStatus = eventType === "suggestions.final" ? "final" : "partial";
+    const answerKey = (item) =>
+      JSON.stringify({
+        selectedCodes: [...(item.selectedCodes || [])].sort(),
+        freeText: item.freeText || "",
+      });
     const incomingByQuestion = new Map(
       incoming.map((suggestion) => [suggestion.questionId, suggestion]),
     );
@@ -728,16 +734,36 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
 
     for (const existing of current || []) {
       const next = incomingByQuestion.get(existing.questionId);
-      if (acceptedSet.has(existing.id)) {
+      if (
+        acceptedSet.has(existing.id) ||
+        existing.reviewStatus === "accepted" ||
+        existing.locked
+      ) {
         merged.push(existing);
         seen.add(existing.questionId);
         continue;
       }
       if (next) {
+        const evidenceTurnIds = Array.from(
+          new Set([
+            ...(existing.evidenceTurnIds || []),
+            ...(next.evidenceTurnIds || []),
+          ]),
+        );
+        const changedAnswer = answerKey(existing) !== answerKey(next);
         merged.push({
+          ...existing,
           ...next,
           id: existing.id,
-          liveStatus: eventType === "suggestions.final" ? "final" : "partial",
+          liveStatus,
+          evidenceTurnIds,
+          status: changedAnswer ? "conflict" : next.status || existing.status,
+          previousAnswer: changedAnswer
+            ? {
+                selectedCodes: existing.selectedCodes || [],
+                freeText: existing.freeText || "",
+              }
+            : existing.previousAnswer,
         });
         seen.add(existing.questionId);
         continue;
@@ -752,7 +778,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
       if (seen.has(item.questionId)) continue;
       merged.push({
         ...item,
-        liveStatus: eventType === "suggestions.final" ? "final" : "partial",
+        liveStatus,
       });
     }
 
@@ -844,6 +870,8 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             ready: "listo",
             audio_received: `audio recibido (${msg.chunks || 0} chunks)`,
             transcribing: msg.is_final ? "transcribiendo final" : "transcribiendo parcial",
+            extracting: "extrayendo sugerencias",
+            extraction_error: "extraccion fallo; transcripcion sigue activa",
           };
           setStreamStatus(labels[msg.type] || msg.type || "activo");
         },
