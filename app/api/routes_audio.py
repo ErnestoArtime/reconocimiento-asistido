@@ -6,8 +6,10 @@ GET  /api/audio/providers                 -> capabilities por provider
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+import uuid
 from typing import Any
 
 from fastapi import (
@@ -80,9 +82,9 @@ def _enforce_audio_model_allowed(model: str | None, settings: Settings) -> None:
         )
 
 
-def _turn_from_partial(index: int, partial) -> dict[str, Any]:
+def _turn_from_partial(session_id: str, index: int, partial) -> dict[str, Any]:
     return {
-        "turn_id": f"t{index}",
+        "turn_id": f"{session_id}-turn-{index:04d}",
         "speaker_cluster": None,
         "speaker_role": "unknown",
         "start": partial.start,
@@ -571,12 +573,14 @@ async def stream_and_extract(websocket: WebSocket) -> None:
     section = qs.get("section")
     ia_provider = qs.get("ia_provider")
     ia_model = qs.get("ia_model")
+    session_id = (qs.get("session_id") or f"live-{uuid.uuid4().hex[:12]}").strip()
     await websocket.send_json(
         {
             "type": "connected",
             "provider": provider_name,
             "language": language,
             "module": module,
+            "session_id": session_id,
         }
     )
 
@@ -621,8 +625,15 @@ async def stream_and_extract(websocket: WebSocket) -> None:
     )
     transcriber = StreamingTranscriber(provider, cfg)
     turns: list[dict[str, Any]] = []
+    audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=200)
+    extraction_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=20)
+    send_lock = asyncio.Lock()
 
-    async def chunks():
+    async def send_event(payload: dict[str, Any]) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    async def receive_audio() -> None:
         chunk_count = 0
         byte_count = 0
         try:
@@ -640,21 +651,37 @@ async def stream_and_extract(websocket: WebSocket) -> None:
                 chunk_count += 1
                 byte_count += len(data)
                 if chunk_count == 1 or chunk_count % 25 == 0:
-                    await websocket.send_json(
+                    await send_event(
                         {
                             "type": "audio_received",
                             "chunks": chunk_count,
                             "bytes": byte_count,
                         }
                     )
-                yield data
+                await audio_queue.put(data)
         except WebSocketDisconnect:
             return
+        finally:
+            await audio_queue.put(None)
+
+    async def chunks():
+        while True:
+            item = await audio_queue.get()
+            if item is None:
+                break
+            yield item
 
     async def emit_suggestions(event_type: str) -> None:
         transcript = " ".join(turn["text"] for turn in turns if turn.get("text")).strip()
         if not transcript:
             return
+        await send_event(
+            {
+                "type": "extracting",
+                "event": event_type,
+                "turn_ids": [turn["turn_id"] for turn in turns],
+            }
+        )
         request = ExtractFromTextRequest(
             module=module,  # type: ignore[arg-type]
             section=section_label,
@@ -724,7 +751,7 @@ async def stream_and_extract(websocket: WebSocket) -> None:
             transcription=transcription_meta_v1(transcription),
             clinical_summary=clinical_summary,
         )
-        await websocket.send_json(
+        await send_event(
             {
                 "type": event_type,
                 "processed_turn_ids": [turn["turn_id"] for turn in turns],
@@ -732,9 +759,47 @@ async def stream_and_extract(websocket: WebSocket) -> None:
             }
         )
 
+    async def extraction_worker() -> None:
+        pending_final = False
+        while True:
+            should_stop = False
+            event_type = await extraction_queue.get()
+            if event_type is None:
+                if pending_final or turns:
+                    event_type = "suggestions.final"
+                    should_stop = True
+                else:
+                    break
+            while not extraction_queue.empty():
+                extra = extraction_queue.get_nowait()
+                if extra is None:
+                    pending_final = True
+                    should_stop = True
+                    continue
+                event_type = "suggestions.final" if pending_final else extra
+            try:
+                await emit_suggestions(event_type)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[stream_extract] extraction failed: %s", exc)
+                try:
+                    await send_event(
+                        {
+                            "type": "extraction_error",
+                            "error": str(exc),
+                            "turn_ids": [turn["turn_id"] for turn in turns],
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            if pending_final or should_stop:
+                break
+
+    receiver_task = asyncio.create_task(receive_audio())
+    extractor_task = asyncio.create_task(extraction_worker())
+
     try:
         async for partial in transcriber.consume(chunks()):
-            await websocket.send_json(
+            await send_event(
                 {
                     "type": "transcribing",
                     "is_final": partial.is_final,
@@ -744,12 +809,12 @@ async def stream_and_extract(websocket: WebSocket) -> None:
                 }
             )
             if partial.is_final:
-                turn = _turn_from_partial(len(turns) + 1, partial)
+                turn = _turn_from_partial(session_id, len(turns) + 1, partial)
                 turns.append(turn)
-                await websocket.send_json({"type": "transcript.final", "turn": turn})
-                await emit_suggestions("suggestions.partial")
+                await send_event({"type": "transcript.final", "turn": turn})
+                await extraction_queue.put("suggestions.partial")
             else:
-                await websocket.send_json(
+                await send_event(
                     {
                         "type": "transcript.partial",
                         "text": partial.text,
@@ -758,8 +823,10 @@ async def stream_and_extract(websocket: WebSocket) -> None:
                         "provider": provider_name,
                     }
                 )
-        await emit_suggestions("suggestions.final")
-        await websocket.send_json({"type": "done"})
+        await extraction_queue.put(None)
+        await extractor_task
+        await receiver_task
+        await send_event({"type": "done"})
     except WebSocketDisconnect:
         logger.info("[stream_extract] client disconnected")
         return
@@ -770,6 +837,9 @@ async def stream_and_extract(websocket: WebSocket) -> None:
         except Exception:  # noqa: BLE001
             pass
     finally:
+        for task in (receiver_task, extractor_task):
+            if not task.done():
+                task.cancel()
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001
