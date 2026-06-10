@@ -226,7 +226,14 @@ function SuggestionCard({ suggestion, question, accepted, sequential, onAccept }
   const confidencePct = Math.round((suggestion.confidence || 0) * 100);
   const highConf = (suggestion.confidence || 0) >= 0.7;
   const isConflict = suggestion.status === "conflict";
-  const blocking = hasBlockingRisk(suggestion);
+  const blocking = isConflict || hasBlockingRisk(suggestion);
+  const formatAnswerSnapshot = (snapshot) => {
+    if (!snapshot) return "";
+    const labels = (snapshot.selectedCodes || [])
+      .map((code) => codes[code] || code)
+      .filter(Boolean);
+    return labels.length ? labels.join(", ") : snapshot.freeText || "(sin valor)";
+  };
 
   function commitEdit() {
     const labels = selectedCodes
@@ -300,6 +307,8 @@ function SuggestionCard({ suggestion, question, accepted, sequential, onAccept }
 
         {(suggestion.riskFlags?.length > 0 ||
           suggestion.previous ||
+          suggestion.previousAnswer ||
+          suggestion.proposedAnswer ||
           suggestion.liveStatus ||
           suggestion.evidenceTurnIds?.length > 0 ||
           (suggestion.audioStart !== null && suggestion.audioEnd !== null) ||
@@ -314,6 +323,24 @@ function SuggestionCard({ suggestion, question, accepted, sequential, onAccept }
             {suggestion.previous && (
               <Chip
                 label={`Actual: ${suggestion.previous}`}
+                size="small"
+                variant="outlined"
+                color="warning"
+                sx={{ height: 22 }}
+              />
+            )}
+            {suggestion.previousAnswer && (
+              <Chip
+                label={`Anterior: ${formatAnswerSnapshot(suggestion.previousAnswer)}`}
+                size="small"
+                variant="outlined"
+                color="warning"
+                sx={{ height: 22 }}
+              />
+            )}
+            {suggestion.proposedAnswer && (
+              <Chip
+                label={`Nueva: ${formatAnswerSnapshot(suggestion.proposedAnswer)}`}
                 size="small"
                 variant="outlined"
                 color="warning"
