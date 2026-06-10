@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
@@ -39,9 +40,19 @@ def _looks_like_detail_question(question: dict[str, Any]) -> bool:
         "que ",
         "en que ",
         "a que ",
+        "cual",
+        "cuales",
+        "desde cuando",
+        "con que frecuencia",
+        "donde",
+        "cuanto",
+        "durante cuanto",
         "recuerda cuando",
         "cuando ",
         "cuantos ",
+        "describa",
+        "indique",
+        "especifique",
     )
     return text.startswith(detail_prefixes)
 
@@ -59,12 +70,39 @@ def _infer_subject(question: dict[str, Any], parent_text: str = "") -> str:
 
 def _infer_temporal_scope(question: dict[str, Any]) -> str | None:
     text = normalize_text(question.get("text", ""))
-    if any(token in text for token in ["actual", "actualmente", "fuma", "toma alguna medicacion"]):
-        return "current"
-    if any(token in text for token in ["anterior", "anteriormente", "ha trabajado", "ha fumado", "ha consumido"]):
+    past_markers = (
+        "anterior",
+        "anteriormente",
+        "ha trabajado",
+        "ha fumado",
+        "ha consumido",
+        "fumaba",
+        "consumia",
+    )
+    if any(marker in text for marker in past_markers):
         return "past"
-    if any(token in text for token in ["ha padecido", "ha tenido", "hasta la fecha"]):
+
+    ever_markers = (
+        "ha padecido",
+        "ha tenido",
+        "alguna vez",
+        "hasta la fecha",
+    )
+    if any(marker in text for marker in ever_markers):
         return "ever"
+
+    current_markers = (
+        "actual",
+        "actualmente",
+        "en la actualidad",
+        "toma alguna medicacion",
+    )
+    if any(marker in text for marker in current_markers):
+        return "current"
+
+    words = set(re.findall(r"\b\w+\b", text))
+    if "fuma" in words:
+        return "current"
     return None
 
 
