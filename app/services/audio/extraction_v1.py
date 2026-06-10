@@ -17,6 +17,12 @@ def _strip_turn_prefix(text: str) -> str:
     return re.sub(r"^\s*\[[^\]]+\]\s*", "", text or "").strip()
 
 
+def _turn_prefix(segment: Segment) -> str:
+    cluster = (segment.speaker or "NO_SPEAKER").strip() or "NO_SPEAKER"
+    role = _coerce_speaker(segment.speaker) or "unknown"
+    return f"[{cluster}|role={role}]"
+
+
 def extraction_text_for_module(transcription: TranscriptResult, module: str) -> str:
     """Texto a extraer preservando contexto conversacional.
 
@@ -29,7 +35,7 @@ def extraction_text_for_module(transcription: TranscriptResult, module: str) -> 
     if not any(s.speaker for s in segments):
         return transcription.text
     turns = [
-        f"[{_coerce_speaker(s.speaker) or 'unknown'}] {s.text.strip()}"
+        f"{_turn_prefix(s)} {s.text.strip()}"
         for s in segments
         if s.text and s.text.strip()
     ]
@@ -39,7 +45,8 @@ def extraction_text_for_module(transcription: TranscriptResult, module: str) -> 
 def _consensus_speaker(segments: list[Segment]) -> SpeakerRole | None:
     """Si todos los segmentos seleccionados comparten speaker → lo devuelve.
 
-    Mapea SPEAKER_00 → medico, SPEAKER_01 → paciente (convencion proyecto).
+    SPEAKER_00/SPEAKER_01 son clusters de diarizacion, no roles clinicos
+    confirmados; se propagan como unknown.
     Mixto o sin etiqueta → None.
     """
     if not segments:
