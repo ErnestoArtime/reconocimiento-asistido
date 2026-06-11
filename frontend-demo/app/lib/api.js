@@ -204,6 +204,8 @@ function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
   let closedIntentionally = false;
   const pendingChunks = [];
   let resolveBackendReady = null;
+  let rejectBackendReady = null;
+  let backendReadySettled = false;
   const socketReady = new Promise((resolve, reject) => {
     ws.addEventListener("open", () => {
       while (pendingChunks.length && ws.readyState === WebSocket.OPEN) {
@@ -215,12 +217,16 @@ function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
       reject(new Error("ws error"));
     }, { once: true });
   });
-  const backendReady = new Promise((resolve) => {
+  const backendReady = new Promise((resolve, reject) => {
     resolveBackendReady = resolve;
+    rejectBackendReady = reject;
   });
 
   ws.addEventListener("close", () => {
-    if (resolveBackendReady) resolveBackendReady();
+    if (!backendReadySettled && rejectBackendReady) {
+      backendReadySettled = true;
+      rejectBackendReady(new Error("ws closed before backend ready"));
+    }
     if (doneResolving) doneResolving();
     if (!closedIntentionally) onClose && onClose();
   });
@@ -238,7 +244,16 @@ function createQueuedSocketHandle(ws, { onError, onClose } = {}) {
       closedIntentionally = true;
     },
     markBackendReady() {
-      if (resolveBackendReady) resolveBackendReady();
+      if (!backendReadySettled && resolveBackendReady) {
+        backendReadySettled = true;
+        resolveBackendReady();
+      }
+    },
+    markBackendFailed(error) {
+      if (!backendReadySettled && rejectBackendReady) {
+        backendReadySettled = true;
+        rejectBackendReady(error instanceof Error ? error : new Error(String(error)));
+      }
     },
     resolveDone() {
       if (doneResolving) doneResolving();
@@ -306,7 +321,7 @@ export function openStreamingTranscription({
     try {
       const msg = JSON.parse(ev.data);
       if (msg.error) {
-        handle.markBackendReady();
+        handle.markBackendFailed(msg.error);
         return onError && onError(msg.error);
       }
       if (isStreamStatusEvent(msg)) {
@@ -360,7 +375,7 @@ export function openStreamingAssist({
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === "error" || msg.error) {
-        handle.markBackendReady();
+        handle.markBackendFailed(msg.error || "stream-and-extract error");
         return onError && onError(msg.error || "stream-and-extract error");
       }
       if (isStreamStatusEvent(msg)) {

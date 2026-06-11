@@ -335,8 +335,12 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   const sourceRef = useRef(null);
   const liveStreamRef = useRef(null);
   const pcmFullRef = useRef([]); // acumula chunks PCM completos para refinar al detener
+  const pendingPcmRef = useRef([]);
+  const pendingSamplesRef = useRef(0);
+  const flushRemainingPcmRef = useRef(null);
   const streamGotMsgRef = useRef(false); // ¿llegó algún partial/final del WS?
   const streamTextRef = useRef(""); // texto final acumulado durante streaming
+  const lastAppliedRevisionRef = useRef(0);
 
   // Entrevista asistida en vivo: extracción incremental sobre el transcript
   // acumulado a medida que llegan los segmentos finales del WS.
@@ -720,7 +724,10 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
   // pendiente y reencola al terminar -> coalesce de varios finales seguidos.
   function mergeLiveSuggestions(current, incoming, eventType) {
     const acceptedSet = new Set(accepted || []);
-    const liveStatus = eventType === "suggestions.final" ? "final" : "partial";
+    const liveStatus =
+      eventType === "suggestions.final" || eventType === "suggestions.refined"
+        ? "final"
+        : "partial";
     const sameAnswer = (left, right) =>
       JSON.stringify([...(left.selectedCodes || [])].sort()) ===
         JSON.stringify([...(right.selectedCodes || [])].sort()) &&
@@ -741,11 +748,14 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
       ) {
         return "conflict";
       }
+      if (eventType === "suggestions.refined") return "refinement";
       if (existing.liveStatus === "partial") return "refinement";
       if (existing.questionType === "multiple" && isSupersetAnswer(next, existing)) {
         return "enrichment";
       }
-      if (existing.questionType === "text" || existing.freeText) return "revision";
+      if (existing.questionType === "free" || existing.questionType === "text" || existing.freeText) {
+        return "revision";
+      }
       return eventType === "suggestions.final" ? "conflict" : "revision";
     };
     const incomingByQuestion = new Map(
@@ -797,24 +807,35 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
           updateKind === "conflict"
             ? Array.from(new Set([...(next.riskFlags || []), "conflict"]))
             : next.riskFlags || existing.riskFlags || [];
+        const conflictActive = updateKind === "conflict";
         merged.push({
           ...existing,
           ...next,
           id: existing.id,
           liveStatus,
+          audioStart: next.audioStart ?? existing.audioStart,
+          audioEnd: next.audioEnd ?? existing.audioEnd,
+          speaker: next.speaker ?? existing.speaker,
+          speakerCluster: next.speakerCluster ?? existing.speakerCluster,
           evidenceTurnIds,
-          previousEvidenceTurnIds: changedAnswer
+          previousEvidenceTurnIds: conflictActive
             ? existing.evidenceTurnIds || []
-            : existing.previousEvidenceTurnIds,
-          status: updateKind === "conflict" ? "conflict" : next.status || existing.status,
+            : undefined,
+          status: conflictActive ? "conflict" : next.status || existing.status,
           riskFlags,
           updateKind,
-          previousAnswer: changedAnswer
+          previousAnswer: conflictActive
             ? {
                 selectedCodes: existing.selectedCodes || [],
                 freeText: existing.freeText || "",
               }
-            : existing.previousAnswer,
+            : undefined,
+          proposedAnswer: conflictActive
+            ? {
+                selectedCodes: next.selectedCodes || [],
+                freeText: next.freeText || "",
+              }
+            : undefined,
         });
         seen.add(existing.questionId);
         continue;
@@ -898,7 +919,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         adaptSuggestion(raw, data, questionsMap[raw.question_id]),
       );
       setSuggestions((current) =>
-        mergeLiveSuggestions(current, items, "suggestions.final"),
+        mergeLiveSuggestions(current, items, "suggestions.refined"),
       );
       setClinicalSummary(data.clinical_summary || "");
       setExtractStats({
@@ -925,7 +946,11 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     setStreamStatus("conectando");
     streamGotMsgRef.current = false;
     streamTextRef.current = "";
+    lastAppliedRevisionRef.current = 0;
     pcmFullRef.current = [];
+    pendingPcmRef.current = [];
+    pendingSamplesRef.current = 0;
+    flushRemainingPcmRef.current = null;
     liveAssistRef.current = assist;
     assistTextRef.current = "";
     assistBusyRef.current = false;
@@ -995,6 +1020,20 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
           }
         },
         onSuggestions: (msg) => {
+          const revision = Number(msg.extraction_revision || 0);
+          if (
+            msg.type === "suggestions.partial" &&
+            revision > 0 &&
+            revision < lastAppliedRevisionRef.current
+          ) {
+            return;
+          }
+          if (revision > 0) {
+            lastAppliedRevisionRef.current = Math.max(
+              lastAppliedRevisionRef.current,
+              revision,
+            );
+          }
           const data = msg.response || {};
           const items = (data.suggestions || []).map((raw) =>
             adaptSuggestion(raw, data, questionsMap[raw.question_id]),
@@ -1054,8 +1093,6 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         "downsample to 16000",
       );
       const frameSamples = 640; // 40 ms @ 16 kHz.
-      const pendingPcm = [];
-      let pendingSamples = 0;
       const sendPcmFrame = (frame) => {
         try {
           const payload = frame.buffer.slice(
@@ -1070,21 +1107,38 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         }
       };
       const flushPcmFrames = () => {
-        while (pendingSamples >= frameSamples) {
+        while (pendingSamplesRef.current >= frameSamples) {
           const frame = new Int16Array(frameSamples);
           let written = 0;
-          while (written < frameSamples && pendingPcm.length) {
-            const head = pendingPcm[0];
+          while (written < frameSamples && pendingPcmRef.current.length) {
+            const head = pendingPcmRef.current[0];
             const available = head.samples.length - head.offset;
             const take = Math.min(frameSamples - written, available);
             frame.set(head.samples.subarray(head.offset, head.offset + take), written);
             head.offset += take;
             written += take;
-            pendingSamples -= take;
-            if (head.offset >= head.samples.length) pendingPcm.shift();
+            pendingSamplesRef.current -= take;
+            if (head.offset >= head.samples.length) pendingPcmRef.current.shift();
           }
           sendPcmFrame(frame);
         }
+      };
+      flushRemainingPcmRef.current = () => {
+        const remaining = pendingSamplesRef.current;
+        if (!remaining) return;
+        const frame = new Int16Array(remaining);
+        let written = 0;
+        while (written < remaining && pendingPcmRef.current.length) {
+          const head = pendingPcmRef.current[0];
+          const available = head.samples.length - head.offset;
+          const take = Math.min(remaining - written, available);
+          frame.set(head.samples.subarray(head.offset, head.offset + take), written);
+          head.offset += take;
+          written += take;
+          pendingSamplesRef.current -= take;
+          if (head.offset >= head.samples.length) pendingPcmRef.current.shift();
+        }
+        sendPcmFrame(frame);
       };
       const sendFloatChunk = (float) => {
         if (!handle || !streamRef.current) return;
@@ -1093,8 +1147,8 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
         // copia local para refinamiento posterior
         const copy = new Uint8Array(pcm.buffer.slice(0));
         pcmFullRef.current.push(copy.buffer);
-        pendingPcm.push({ samples: pcm, offset: 0 });
-        pendingSamples += pcm.length;
+        pendingPcmRef.current.push({ samples: pcm, offset: 0 });
+        pendingSamplesRef.current += pcm.length;
         flushPcmFrames();
       };
       if (audioCtxRef.current.audioWorklet) {
@@ -1131,6 +1185,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
       setStreaming(false);
       setStreamStatus("error");
       try {
+        flushRemainingPcmRef.current && flushRemainingPcmRef.current();
         handle && handle.stop && (await handle.stop());
         processorRef.current && processorRef.current.disconnect();
         workletNodeRef.current && workletNodeRef.current.disconnect();
@@ -1147,6 +1202,9 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
       audioCtxRef.current = null;
       liveStreamRef.current = null;
       streamRef.current = null;
+      pendingPcmRef.current = [];
+      pendingSamplesRef.current = 0;
+      flushRemainingPcmRef.current = null;
     }
   }
 
@@ -1665,9 +1723,13 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     // Wait for server to flush remaining audio and send final result.
     if (handle) {
       try {
+        flushRemainingPcmRef.current && flushRemainingPcmRef.current();
         await handle.stop();
       } catch {}
     }
+    pendingPcmRef.current = [];
+    pendingSamplesRef.current = 0;
+    flushRemainingPcmRef.current = null;
     setStreaming(false);
     setStreamStatus("idle");
     setStreamPartial("");
