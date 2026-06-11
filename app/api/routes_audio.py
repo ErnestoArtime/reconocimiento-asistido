@@ -111,6 +111,12 @@ def _normalize_for_alignment(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\sáéíóúÁÉÍÓÚñÑüÜ]", " ", text).lower()).strip()
 
 
+def _evidence_matches_turn(evidence: str, normalized_turn: str) -> bool:
+    if not evidence or not normalized_turn:
+        return False
+    return evidence in normalized_turn
+
+
 def _apply_turn_evidence_metadata(
     suggestions: list[Any],
     turns_snapshot: tuple[dict[str, Any], ...],
@@ -121,15 +127,40 @@ def _apply_turn_evidence_metadata(
         (turn, _normalize_for_alignment(str(turn.get("text") or "")))
         for turn in turns_snapshot
     ]
+    turns_by_id = {str(turn.get("turn_id")): (turn, normalized) for turn, normalized in normalized_turns}
     for suggestion in suggestions:
         evidence = _normalize_for_alignment(str(getattr(suggestion, "evidence", "") or ""))
-        matched = [
+        proposed_ids = [str(turn_id) for turn_id in getattr(suggestion, "evidence_turn_ids", [])]
+        valid_proposed = [
+            turn
+            for turn_id in proposed_ids
+            for turn, normalized in [turns_by_id.get(turn_id, ({}, ""))]
+            if turn and _evidence_matches_turn(evidence, normalized)
+        ]
+        matches = [
             turn
             for turn, normalized in normalized_turns
-            if evidence and evidence in normalized
+            if _evidence_matches_turn(evidence, normalized)
         ]
+        if valid_proposed:
+            matched = valid_proposed
+        elif len(matches) == 1:
+            matched = matches
+        elif len(matches) > 1 and len(evidence) >= 16 and len(evidence.split()) >= 3:
+            matched = [matches[-1]]
+        else:
+            matched = []
         if not matched:
-            enriched.append(suggestion)
+            enriched.append(
+                suggestion.model_copy(
+                    update={
+                        "evidence_turn_ids": [],
+                        "speaker_cluster": None,
+                        "audio_start": None,
+                        "audio_end": None,
+                    }
+                )
+            )
             continue
         clusters = {
             turn.get("speaker_cluster")
