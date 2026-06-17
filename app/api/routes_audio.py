@@ -172,7 +172,7 @@ def _apply_turn_evidence_metadata(
             "audio_start": min(float(turn.get("start") or 0.0) for turn in matched),
             "audio_end": max(float(turn.get("end") or 0.0) for turn in matched),
         }
-        if len(clusters) == 1 and getattr(suggestion, "speaker_cluster", None) is None:
+        if len(clusters) == 1:
             updates["speaker_cluster"] = next(iter(clusters))
         enriched.append(suggestion.model_copy(update=updates))
     return enriched
