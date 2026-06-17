@@ -66,8 +66,11 @@ class QuestionnaireEngine:
             if question_type in {"yesno", "yesnoremember", "choice"}:
                 selected_codes = selected_codes[:1]
 
-            selected_labels = [codes[code] for code in selected_codes]
             free_text = suggestion.free_text
+            selected_labels = [
+                (free_text or codes[code]) if codes[code] == "#TEXTO_LIBRE#" else codes[code]
+                for code in selected_codes
+            ]
 
             if not selected_codes and not free_text:
                 continue

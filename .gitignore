@@ -37,6 +37,7 @@ htmlcov/
 coverage.xml
 *.cover
 .hypothesis/
+MEJORAS_EXTRACCION.md
 
 # Jupyter
 .ipynb_checkpoints/

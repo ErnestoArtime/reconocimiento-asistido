@@ -100,6 +100,19 @@ class Settings:
         self.ia_clinical_summary_enabled = _env_bool(
             "IA_CLINICAL_SUMMARY_ENABLED", False
         )
+        # Pase de recuperacion: detecta via LLM que preguntas hizo el medico
+        # explicitamente y reextrae las no respondidas con guardrails permisivos
+        # (lenient). Añade una llamada LLM extra (consume neurons en Cloudflare).
+        # Off por defecto. Activar cuando se requiera cobertura maxima.
+        self.ia_recovery_pass_enabled = _env_bool("IA_RECOVERY_PASS_ENABLED", False)
+        # Deteccion heuristica de turnos medico/paciente. Los segmentos con '?'
+        # se etiquetan como MED, el resto como PAC. Mejora la extraccion de
+        # historia clinica al dar al LLM contexto de quien habla.
+        self.ia_turn_detection_enabled = _env_bool("IA_TURN_DETECTION_ENABLED", True)
+        # BM25 passage retrieval: envia al LLM solo las top-K frases mas relevantes.
+        # La evidencia de grounding siempre verifica contra el transcript completo.
+        self.ia_bm25_enabled = _env_bool("IA_BM25_ENABLED", False)
+        self.ia_bm25_top_k = int(os.getenv("IA_BM25_TOP_K", "15"))
 
         # --- Guardia anti-alucinacion (calibracion) ---
         # Cuando el audio usa preguntas reformuladas/resumidas, el LLM responde
