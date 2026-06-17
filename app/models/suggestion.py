@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 SuggestionStatus = Literal["suggested", "low_confidence", "conflict"]
@@ -16,6 +16,11 @@ class AiSuggestion(BaseModel):
     speaker: str | None = None
     speaker_cluster: str | None = None
     status: SuggestionStatus = "suggested"
+
+    @field_validator("selected_codes", mode="before")
+    @classmethod
+    def _coerce_null_to_empty(cls, v: object) -> object:
+        return v if v is not None else []
 
 
 class ValidatedSuggestion(AiSuggestion):

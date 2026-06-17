@@ -1,6 +1,9 @@
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.api.deps import (
     get_app_settings,
@@ -16,6 +19,7 @@ from app.models.legacy_adapter import build_quality_report, legacy_to_v1
 from app.models.suggestion import ExtractFromTextRequest, ExtractFromTextResponse
 from app.models.suggestion import ValidatedSuggestion
 from app.services.clinical_summary_service import generate_clinical_summary
+from app.services.doctor_question_detector import detect_covered_question_ids
 from app.services.extraction_service import extract_from_text, merge_suggestions
 from app.services.extraction_guard import (
     MODULE_WIDE_NARROW_THRESHOLD,
@@ -172,6 +176,26 @@ def _extract_validated_suggestions(
     if request.transcript_turns:
         extract_extra["transcript_turns"] = request.transcript_turns
 
+    # Propuesta 3: deteccion heuristica de turnos medico/paciente.
+    # Solo actua si el caller no proveyó turnos ya (p.ej. audio diarizado).
+    if getattr(settings, "ia_turn_detection_enabled", True) and not extract_extra.get("transcript_turns"):
+        from app.services.turn_detector import detect_turns
+        heuristic_turns = detect_turns(request.text)
+        if heuristic_turns:
+            extract_extra["transcript_turns"] = heuristic_turns
+            logger.debug("Turn detection: %d turnos detectados", len(heuristic_turns))
+
+    # Propuesta 2: BM25 passage retrieval. El LLM recibe solo las frases mas
+    # relevantes; el grounding sigue verificando contra request.text original.
+    extraction_text = request.text
+    if getattr(settings, "ia_bm25_enabled", False):
+        from app.services.bm25_retrieval import retrieve_relevant_passages
+        extraction_text = retrieve_relevant_passages(
+            request.text,
+            extraction_questions,
+            top_k=getattr(settings, "ia_bm25_top_k", 15),
+        )
+
     raw_suggestions = []
     started = time.perf_counter()
 
@@ -200,7 +224,7 @@ def _extract_validated_suggestions(
             # Ollama es local: carga un solo modelo. Lotes en paralelo compiten
             # por RAM/GPU -> 500 / timeout / WinError 1450. Serializar (workers=1).
             llm_suggestions = extract_small_batches(
-                text=request.text,
+                text=extraction_text,
                 module=request.module,
                 section=section_label,
                 questions=extraction_questions,
@@ -211,7 +235,7 @@ def _extract_validated_suggestions(
             )
         else:
             llm_suggestions = active_ollama.extract(
-                text=request.text,
+                text=extraction_text,
                 module=request.module,
                 section=section_label,
                 questions=extraction_questions,
@@ -229,7 +253,7 @@ def _extract_validated_suggestions(
             )
         if use_batch:
             cf_suggestions = extract_small_batches(
-                text=request.text,
+                text=extraction_text,
                 module=request.module,
                 section=section_label,
                 questions=extraction_questions,
@@ -240,7 +264,7 @@ def _extract_validated_suggestions(
             )
         else:
             cf_suggestions = active_cloudflare.extract(
-                text=request.text,
+                text=extraction_text,
                 module=request.module,
                 section=section_label,
                 questions=extraction_questions,
@@ -263,6 +287,24 @@ def _extract_validated_suggestions(
             # both / both_cloudflare: LLM prevalece, heuristico cubre huecos
             raw_suggestions = merge_suggestions(raw_suggestions, heuristic_suggestions)
 
+    # Pase de recuperacion (opt-in via IA_RECOVERY_PASS_ENABLED).
+    # Detecta preguntas que el medico hizo explicitamente y que el extractor
+    # principal no capturo. Las reextrae con guardrails permisivos (lenient) para
+    # maximizar cobertura sin sacrificar el anclaje al transcript.
+    if getattr(settings, "ia_recovery_pass_enabled", False) and provider in {
+        "ollama", "both", "cloudflare", "both_cloudflare"
+    }:
+        raw_suggestions = _run_recovery_pass(
+            request=request,
+            section_label=section_label,
+            extraction_questions=extraction_questions,
+            raw_suggestions=raw_suggestions,
+            extract_extra=extract_extra,
+            provider=provider,
+            active_ollama=active_ollama,
+            active_cloudflare=active_cloudflare,
+        )
+
     suggestions = engine.validate_suggestions(raw_suggestions)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     return (
@@ -272,6 +314,86 @@ def _extract_validated_suggestions(
         _model_used(provider, settings, ollama_model, cloudflare_model),
         clinical_summary,
     )
+
+
+def _run_recovery_pass(
+    *,
+    request: ExtractFromTextRequest,
+    section_label: str,
+    extraction_questions: list[dict],
+    raw_suggestions: list,
+    extract_extra: dict,
+    provider: str,
+    active_ollama: OllamaProvider,
+    active_cloudflare: CloudflareProvider | None,
+) -> list:
+    """Reextrae preguntas que el medico hizo pero el extractor principal no capturo.
+
+    1. Detecta via LLM los temas que el medico pregunto (detect_covered_question_ids).
+    2. Calcula covered - already_answered = missing_covered.
+    3. Para cada pregunta missing_covered, llama al mismo extractor con guardrails
+       permisivos (lenient_question_ids). El anclaje al transcript se mantiene.
+    4. Fusiona con raw_suggestions (raw prevalece sobre recovery).
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    # Elegir el provider activo para la deteccion
+    detector_provider = None
+    if provider in {"ollama", "both"}:
+        detector_provider = active_ollama
+    elif provider in {"cloudflare", "both_cloudflare"} and active_cloudflare:
+        detector_provider = active_cloudflare
+
+    if detector_provider is None:
+        return raw_suggestions
+
+    covered_ids = detect_covered_question_ids(
+        request.text, extraction_questions, detector_provider
+    )
+    if not covered_ids:
+        return raw_suggestions
+
+    answered_ids = {s.question_id for s in raw_suggestions}
+    missing_questions = [
+        q for q in extraction_questions
+        if q.get("id") in covered_ids and q.get("id") not in answered_ids
+    ]
+    if not missing_questions:
+        return raw_suggestions
+
+    _log.info(
+        "Recovery pass: %d preguntas cubiertas por el medico sin respuesta, reextrayendo",
+        len(missing_questions),
+    )
+
+    if provider in {"ollama", "both"}:
+        recovery_raw = active_ollama.extract(
+            text=request.text,
+            module=request.module,
+            section=section_label,
+            questions=missing_questions,
+            **extract_extra,
+        )
+    elif provider in {"cloudflare", "both_cloudflare"} and active_cloudflare:
+        recovery_raw = active_cloudflare.extract(
+            text=request.text,
+            module=request.module,
+            section=section_label,
+            questions=missing_questions,
+            **extract_extra,
+        )
+    else:
+        return raw_suggestions
+
+    recovery_filtered = ground_and_filter_llm(
+        recovery_raw,
+        missing_questions,
+        request.text,
+        lenient_question_ids=covered_ids,
+    )
+
+    return merge_suggestions(raw_suggestions, recovery_filtered)
 
 
 def _questions_or_404(

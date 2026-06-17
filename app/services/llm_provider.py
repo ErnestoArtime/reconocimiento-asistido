@@ -54,6 +54,33 @@ BASE_SYSTEM_PROMPT = (
     "puede no contener la palabra-tema de la pregunta.\n"
     "- Salida unicamente JSON valido segun el esquema. Sin comentarios. Sin razonamiento.\n"
     "\n"
+    "COBERTURA DE NEGACIONES (critico para la precision del formulario):\n"
+    "- Si el paciente NIEGA algo explicitamente ('no', 'nunca', 'jamas', 'niega', "
+    "'no tengo', 'no he tenido', 'no lo tomo'), INCLUYE la pregunta con el codigo "
+    "de negacion. Omitir NO equivale a negacion: el formulario distingue 'sin "
+    "respuesta' de 'respondido con No'. Si hay negacion clara, SIEMPRE incluye.\n"
+    "- Si el paciente usa incertidumbre ('no se', 'no recuerdo', 'no estoy seguro', "
+    "'creo que no') y la pregunta es yesnoremember, usa el codigo 'No recuerda'. "
+    "Si la pregunta es yesno sin opcion de no-recuerda, usa el codigo negativo con "
+    "confidence <= 0.6.\n"
+    "\n"
+    "Negaciones implicitas en espanol medico:\n"
+    "- 'lo deje hace X', 'ya no lo tomo', 'no lo tomo desde hace...' -> actualmente NO.\n"
+    "- 'antes si pero ahora no', 'de joven si' -> actualmente NO, historicamente SI.\n"
+    "- 'algo asi', 'me parece que si', 'creo que', 'puede ser' -> SI con confidence 0.5-0.65.\n"
+    "\n"
+    "Ejemplos de extraccion correcta:\n"
+    "Texto: 'Medico: ¿Fuma? Paciente: No, lo deje hace tres anos. "
+    "Medico: ¿Antes fumaba? Paciente: Si, fumaba bastante de joven.'\n"
+    "-> '¿Fuma?' (yesno {X1:Si,X2:No}): codes=[X2], evidence='lo deje hace tres anos'\n"
+    "-> '¿Ha fumado anteriormente?' (yesno {X3:Si,X4:No}): codes=[X3], evidence='fumaba bastante de joven'\n"
+    "Texto: 'Medico: ¿Alergias? Paciente: No se, quiza al ibuprofeno, me sento mal una vez.'\n"
+    "-> '¿Alergias?' (yesnoremember {Y1:Si,Y2:No,Y3:NoRecuerda}): codes=[Y3], "
+    "evidence='No se, quiza al ibuprofeno, me sento mal una vez'\n"
+    "Texto: 'Medico: ¿Operaciones? Paciente: No, nunca me han operado.'\n"
+    "-> '¿Intervenciones?' (yesno {Z1:Si,Z2:No}): codes=[Z2], "
+    "evidence='No, nunca me han operado'  <- INCLUIR: la negacion tiene codigo propio\n"
+    "\n"
     "Razonamiento temporal (CRITICO):\n"
     "- Distingue presente vs historico. Una pregunta puede ser actual ('Fuma?') o "
     "historica/anterior ('Ha fumado anteriormente?', 'Ha consumido alguna vez?').\n"
@@ -103,7 +130,27 @@ SUMMARY_SYSTEM_PROMPT = (
     "- Texto plano breve. Sin markdown, sin preambulo, sin razonamiento.\n"
     "Secciones posibles: Antecedentes personales, Antecedentes familiares, "
     "Habitos, Alergias, Medicacion, Intervenciones, Anamnesis (motivo y "
-    "sintomas actuales), Exploracion fisica."
+    "sintomas actuales), Exploracion fisica.\n"
+    "Al final, agrega una seccion 'Preguntas del medico:' listando cada pregunta "
+    "que el medico formulo explicitamente con la respuesta breve del paciente. "
+    "Formato por linea: '- [tema de la pregunta] -> [respuesta del paciente en 1-10 palabras]'. "
+    "Ejemplo correcto: '- ¿Fuma? -> no, lo dejo hace 3 anos'. "
+    "Ejemplo correcto: '- ¿Alergias? -> no sabe, quiza al ibuprofeno'. "
+    "Incluye TODAS las preguntas del medico, incluso las que el paciente respondio con no o no recuerda. "
+    "Omite esta seccion solo si no hay preguntas claras del medico."
+)
+
+
+DOCTOR_DETECTOR_SYSTEM_PROMPT = (
+    "Eres un asistente que analiza transcripciones de entrevistas medicas en espanol. "
+    "Tu tarea: identificar los temas que el MEDICO pregunto explicitamente al paciente. "
+    "Solo cuenta preguntas del medico, no lo que el paciente menciona voluntariamente.\n"
+    "Devuelve unicamente JSON valido: {\"temas\": [\"tema1\", \"tema2\", ...]}\n"
+    "Los temas deben ser palabras clave cortas (1-4 palabras) que capturen el concepto "
+    "preguntado. Ejemplos validos de temas: 'fuma', 'alergias', 'operaciones previas', "
+    "'trabajo actual', 'enfermedades familiares', 'medicacion actual', 'habitos alcohol', "
+    "'actividad fisica', 'antecedentes quirurgicos', 'historia laboral'.\n"
+    "Sin texto adicional. Solo JSON."
 )
 
 
@@ -192,11 +239,27 @@ def _build_user_prompt(
     clinical_context: str | None = None,
     transcript_turns: list[dict[str, Any]] | None = None,
 ) -> str:
+    from app.services.extraction_service import narrow_codes_by_relevance
+    from app.services.text_utils import normalize_text as _normalize
+
+    norm_text = _normalize(text)
+
+    compact_questions: list[dict[str, Any]] = []
+    for q in questions:
+        cq = _compact_question(q)
+        if q.get("question_type") == "multiple":
+            codes = cq.get("codes", {})
+            if len(codes) > 8:
+                narrowed = narrow_codes_by_relevance(codes, norm_text)
+                if len(narrowed) < len(codes):
+                    cq = {**cq, "codes": narrowed}
+        compact_questions.append(cq)
+
     payload: dict[str, Any] = {
         "module": module,
         "section": section,
         "transcript": text,
-        "questions": [_compact_question(q) for q in questions],
+        "questions": compact_questions,
         "output_schema": {
             "suggestions": [
                 {
@@ -359,7 +422,23 @@ class CloudflareProvider:
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
+                if response.status_code == 400 and json_mode:
+                    # Algunos modelos CF (ej. Qwen 2.5) no soportan response_format.
+                    # Reintentar sin el parametro; el parser downstream sigue siendo robusto.
+                    logger.info(
+                        "CF 400 con json_mode, reintento sin response_format (model=%s)",
+                        self.model,
+                    )
+                    payload.pop("response_format", None)
+                    response = client.post(url, json=payload, headers=headers)
+                if not response.is_success:
+                    logger.error(
+                        "Cloudflare error %s para %s — body: %s",
+                        response.status_code,
+                        self.model,
+                        response.text[:400],
+                    )
+                    response.raise_for_status()
                 data = response.json()
         except httpx.HTTPError as exc:
             logger.error("Error llamando a Cloudflare Workers AI: %s", exc)
@@ -418,6 +497,25 @@ class CloudflareProvider:
                 {"role": "user", "content": text},
             ],
             json_mode=False,
+        )
+        return _strip_thinking(content)
+
+    def detect_doctor_topics(self, transcript: str) -> str:
+        """Detecta los temas que el médico preguntó explícitamente. Devuelve JSON crudo."""
+        if not transcript.strip():
+            return ""
+        user_content = (
+            "Transcripcion:\n"
+            + transcript[:3000]
+            + "\n\nIdentifica los temas que el MEDICO pregunto explicitamente. "
+            "Devuelve JSON: {\"temas\": [...]}"
+        )
+        content = self._run(
+            [
+                {"role": "system", "content": DOCTOR_DETECTOR_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            json_mode=True,
         )
         return _strip_thinking(content)
 
@@ -561,5 +659,24 @@ class OllamaProvider:
                 {"role": "user", "content": text},
             ],
             fmt=None,
+        )
+        return _strip_thinking(content)
+
+    def detect_doctor_topics(self, transcript: str) -> str:
+        """Detecta los temas que el médico preguntó explícitamente. Devuelve JSON crudo."""
+        if not transcript.strip():
+            return ""
+        user_content = (
+            "Transcripcion:\n"
+            + transcript[:3000]
+            + "\n\nIdentifica los temas que el MEDICO pregunto explicitamente. "
+            "Devuelve JSON: {\"temas\": [...]}"
+        )
+        content = self._chat(
+            [
+                {"role": "system", "content": DOCTOR_DETECTOR_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            fmt="json",
         )
         return _strip_thinking(content)

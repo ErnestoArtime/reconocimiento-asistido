@@ -48,12 +48,59 @@ MODULE_WIDE_NARROW_THRESHOLD = 20
 # puntuacion/tildes; exigir substring exacto descarta evidencia valida.
 FUZZY_GROUNDING_MIN_RATIO = 0.7
 
+# Sinonimos medicos en espanol para expansion de tokens en grounding fuzzy.
+# Evita falsos rechazos cuando el paciente usa una variante terminologica del
+# concepto preguntado (p.ej. "cardio" en evidencia vs "cardiovascular" en texto).
+_MEDICAL_SYNONYMS_ES: dict[str, frozenset[str]] = {
+    "cardio": frozenset({"cardiovascular", "corazon", "cardiaco", "cardiopatia", "cardiac"}),
+    "cardiovascular": frozenset({"cardio", "corazon", "cardiaco", "cardiopatia"}),
+    "corazon": frozenset({"cardio", "cardiovascular", "cardiaco", "infarto"}),
+    "alergia": frozenset({"alergico", "alergica", "intolerancia", "reaccion adversa", "hipersensibilidad"}),
+    "alergico": frozenset({"alergia", "intolerancia", "no tolero", "reaccion adversa"}),
+    "alergica": frozenset({"alergia", "intolerancia", "no tolero"}),
+    "fuma": frozenset({"fumador", "tabaco", "cigarrillo", "cigarro", "nicotina", "fumar"}),
+    "fumador": frozenset({"fuma", "tabaco", "cigarrillo", "cigarro", "fumar"}),
+    "tabaco": frozenset({"fuma", "fumador", "cigarrillo", "cigarro", "fumar"}),
+    "cigarrillo": frozenset({"fuma", "fumador", "tabaco", "cigarro"}),
+    "operacion": frozenset({"cirugia", "quirurgica", "intervencion", "operado", "operada", "intervenido"}),
+    "cirugia": frozenset({"operacion", "quirurgica", "intervencion", "operado", "operada"}),
+    "intervencion": frozenset({"operacion", "cirugia", "quirurgica", "operado", "operada"}),
+    "operado": frozenset({"operacion", "cirugia", "intervencion", "quirurgico"}),
+    "medicamento": frozenset({"medicacion", "farmaco", "pastilla", "tratamiento", "comprimido", "capsula"}),
+    "medicacion": frozenset({"medicamento", "farmaco", "pastilla", "tratamiento", "comprimido"}),
+    "farmaco": frozenset({"medicamento", "medicacion", "pastilla", "tratamiento"}),
+    "pastilla": frozenset({"medicamento", "medicacion", "farmaco", "comprimido"}),
+    "ejercicio": frozenset({"deporte", "actividad", "entrenamiento", "entreno", "gimnasio", "fisico"}),
+    "deporte": frozenset({"ejercicio", "actividad", "entrenamiento", "gimnasio", "atletismo"}),
+    "entreno": frozenset({"ejercicio", "deporte", "entrenamiento", "gimnasio"}),
+    "padre": frozenset({"paterno", "progenitor", "papa", "viejo", "progenitores"}),
+    "madre": frozenset({"materno", "progenitora", "mama", "vieja", "progenitores"}),
+    "familiar": frozenset({"padre", "madre", "hermano", "abuelo", "familia", "hereditario"}),
+    "hipertension": frozenset({"tension alta", "presion alta", "hipertenso", "hipertensa", "hta"}),
+    "hipertenso": frozenset({"hipertension", "tension alta", "presion alta", "hta"}),
+    "diabetes": frozenset({"diabetico", "diabetica", "glucosa", "azucar", "insulina"}),
+    "diabetico": frozenset({"diabetes", "glucosa", "azucar", "insulina"}),
+    "alcohol": frozenset({"bebida", "alcoholica", "bebo", "bebedor", "vino", "cerveza", "ron", "bebidas"}),
+    "bebida": frozenset({"alcohol", "alcoholica", "bebedor", "vino", "cerveza", "ron"}),
+    "asma": frozenset({"asmatico", "asmatica", "bronquios", "inhalador", "bronquial"}),
+    "colesterol": frozenset({"lipidos", "trigliceridos", "estatina", "hipercolesterolemia"}),
+    "trabajo": frozenset({"laboral", "empleo", "profesion", "oficio", "ocupacion", "empresa"}),
+    "laboral": frozenset({"trabajo", "empleo", "profesion", "oficio", "ocupacion"}),
+}
+
+
+def _expand_token(token: str) -> frozenset[str]:
+    """Expande un token con sus sinonimos medicos."""
+    synonyms = _MEDICAL_SYNONYMS_ES.get(token, frozenset())
+    return frozenset({token}) | synonyms
+
 
 def _evidence_grounded(evidence_norm: str, norm_text: str, *, fuzzy: bool) -> bool:
     """True si la evidencia esta anclada en la transcripcion.
 
     Substring literal primero. Si `fuzzy`, acepta tambien cobertura de tokens
-    >= FUZZY_GROUNDING_MIN_RATIO (tolera reescritura menor del modelo).
+    >= FUZZY_GROUNDING_MIN_RATIO con expansion de sinonimos medicos (tolera
+    reescritura menor del modelo y variantes terminologicas del paciente).
     """
     if not evidence_norm:
         return False
@@ -64,7 +111,11 @@ def _evidence_grounded(evidence_norm: str, norm_text: str, *, fuzzy: bool) -> bo
     tokens = [tok for tok in evidence_norm.split() if len(tok) > 2]
     if not tokens:
         return False
-    hits = sum(1 for tok in tokens if tok in norm_text)
+    hits = 0
+    for tok in tokens:
+        expanded = _expand_token(tok)
+        if any(syn in norm_text for syn in expanded):
+            hits += 1
     return hits / len(tokens) >= FUZZY_GROUNDING_MIN_RATIO
 
 
@@ -85,6 +136,35 @@ def narrow_questions_by_relevance(
     return expand_with_family_context(questions, selected)
 
 
+def _rejection_reason(
+    s: AiSuggestion,
+    question: Any,
+    evidence: str,
+    norm_text: str,
+    ev_counts: Counter,
+    *,
+    fuzzy_grounding: bool,
+    relevance_scope: str,
+    lenient: bool,
+) -> str | None:
+    """Devuelve el motivo de rechazo o None si la sugerencia es valida."""
+    if question is None:
+        return "unknown_question"
+    if not s.selected_codes and not (s.free_text or "").strip():
+        # Algunos modelos (ej. scout) emiten entradas con selected_codes vacio.
+        return "no_codes"
+    if not evidence:
+        return "no_evidence"
+    if not _evidence_grounded(evidence, norm_text, fuzzy=fuzzy_grounding):
+        return "evidence_not_grounded"
+    if ev_counts[evidence] >= DUPLICATE_EVIDENCE_LIMIT:
+        return "duplicate_evidence"
+    relevance_target = norm_text if relevance_scope == "transcript" else evidence
+    if not lenient and not question_topic_present(question, relevance_target):
+        return "evidence_irrelevant"
+    return None
+
+
 def ground_and_filter_llm(
     suggestions: list[AiSuggestion],
     questions: list[dict[str, Any]],
@@ -93,6 +173,7 @@ def ground_and_filter_llm(
     fuzzy_grounding: bool | None = None,
     relevance_scope: str | None = None,
     lenient: bool | None = None,
+    lenient_question_ids: set[str] | None = None,
 ) -> list[AiSuggestion]:
     """Filtra sugerencias LLM no ancladas/irrelevantes. Acota confidence.
 
@@ -103,6 +184,8 @@ def ground_and_filter_llm(
       (no solo la cita). Audios con preguntas reformuladas producen respuestas
       validas sin la palabra-tema -> exigirla en la cita las descartaba.
     - lenient: omite el check de relevancia (solo exige anclaje al transcript).
+    - lenient_question_ids: aplica modo lenient solo para estas preguntas concretas
+      (p.ej. preguntas que el medico pregunto explicitamente en el pase de recovery).
     """
     if not suggestions:
         return []
@@ -127,23 +210,14 @@ def ground_and_filter_llm(
     for s in suggestions:
         question = by_id.get(s.question_id)
         evidence = normalize_text(s.evidence or "")
-        relevance_target = norm_text if relevance_scope == "transcript" else evidence
+        is_lenient = lenient or bool(lenient_question_ids and s.question_id in lenient_question_ids)
 
-        reason: str | None = None
-        if question is None:
-            reason = "unknown_question"
-        elif not s.selected_codes and not (s.free_text or "").strip():
-            # Sugerencia sin codigo ni texto libre = sin contenido util. Algunos
-            # modelos (ej. scout) emiten entradas con selected_codes vacio.
-            reason = "no_codes"
-        elif not evidence:
-            reason = "no_evidence"
-        elif not _evidence_grounded(evidence, norm_text, fuzzy=fuzzy_grounding):
-            reason = "evidence_not_grounded"
-        elif ev_counts[evidence] >= DUPLICATE_EVIDENCE_LIMIT:
-            reason = "duplicate_evidence"
-        elif not lenient and not question_topic_present(question, relevance_target):
-            reason = "evidence_irrelevant"
+        reason = _rejection_reason(
+            s, question, evidence, norm_text, ev_counts,
+            fuzzy_grounding=fuzzy_grounding,
+            relevance_scope=relevance_scope,
+            lenient=is_lenient,
+        )
 
         if reason:
             dropped.append((s.question_id, reason))

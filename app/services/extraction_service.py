@@ -342,6 +342,71 @@ def _has_abnormal_exam_evidence(question_text: str, normalized_text: str) -> boo
     return any(token in normalized_text for token in _topic_tokens(question_text))
 
 
+_CODE_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "biologicos": ("biologico", "virus", "bacteria", "microorganismo"),
+    "ruido": ("ruidoso", "ruidos", "acustico", "decibeles", "sonido alto"),
+    "manipulacion de cargas": ("carga pesada", "levantamiento", "cargas manuales", "levantar peso"),
+    "movimientos repetitivos": ("repeticion", "repetitivo", "movimiento repetido"),
+    "pantallas de visualizacion": ("pantalla", "pvd", "monitor", "ordenador"),
+    "posturas forzadas": ("postura", "ergonomia", "posicion forzada"),
+    "quimicos": ("quimico", "quimica", "sustancia quimica", "disolvente", "toxico"),
+    "radiaciones ionizantes": ("radiacion", "rayos x", "radiografia", "rx"),
+    "radiaciones no ionizantes": ("ultravioleta", "uv", "infrarrojo", "laser"),
+    "riesgo electrico": ("electrico", "electricidad", "corriente electrica"),
+    "sustancias cancerigenas": ("cancerigeno", "carcinogeno", "amianto", "asbesto"),
+    "temperaturas altas": ("calor", "temperatura alta", "caluroso"),
+    "temperaturas bajas": ("frio", "temperatura baja", "frio extremo"),
+    "turnicidad": ("turno", "turnos", "nocturno", "rotatorio", "turno de noche"),
+    "caidas de alturas": ("altura", "caida", "andamio", "escalera", "trabajo en altura"),
+    "espacio confinado": ("confinado", "espacio cerrado", "espacio limitado"),
+    "tapon de cerumen dcho": ("cerumen derecho", "oido derecho", "tapon derecho"),
+    "tapon de cerumen izdo": ("cerumen izquierdo", "oido izquierdo", "tapon izquierdo"),
+    "tapon cerumen bilateral": ("cerumen bilateral", "ambos oidos", "tapones bilaterales"),
+    "derivados penicilina": ("penicilina", "amoxicilina", "ampicilina"),
+    "aines": ("ibuprofeno", "naproxeno", "diclofenaco", "antiinflamatorio"),
+}
+
+
+def narrow_codes_by_relevance(
+    codes: dict[str, str],
+    norm_text: str,
+    min_keep: int = 3,
+) -> dict[str, str]:
+    """Filtra los codigos de una pregunta multiple sin mencion en el texto.
+
+    Para preguntas con muchas opciones (riesgos laborales, hallazgos fisicos),
+    el LLM recibe solo los codigos cuyos terminos aparecen en el transcript.
+    Siempre conserva los codigos #TEXTO_LIBRE# y al menos min_keep codigos de
+    contenido. Si el filtrado dejaria menos de min_keep, devuelve todos.
+    """
+    free_text_codes: dict[str, str] = {}
+    candidate_codes: dict[str, str] = {}
+
+    for code, label in codes.items():
+        if "#TEXTO_LIBRE#" in label:
+            free_text_codes[code] = label
+        else:
+            candidate_codes[code] = label
+
+    kept: dict[str, str] = {}
+    for code, label in candidate_codes.items():
+        norm_label = normalize_text(label)
+        if _code_mentioned_in_text(norm_label, norm_text):
+            kept[code] = label
+
+    if len(kept) < min_keep:
+        return codes
+
+    return {**kept, **free_text_codes}
+
+
+def _code_mentioned_in_text(norm_label: str, norm_text: str) -> bool:
+    if len(norm_label) >= 4 and norm_label in norm_text:
+        return True
+    synonyms = _CODE_SYNONYMS.get(norm_label, ())
+    return any(syn in norm_text for syn in synonyms)
+
+
 def _code_label_matches(normalized_label: str, normalized_text: str) -> bool:
     if len(normalized_label) >= 4 and normalized_label in normalized_text:
         return True

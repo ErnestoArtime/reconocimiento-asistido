@@ -6,3 +6,4 @@ python-dotenv==1.0.1
 python-multipart==0.0.12
 PyYAML==6.0.2
 cryptography>=42,<49
+rank_bm25==0.2.2

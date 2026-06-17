@@ -52,7 +52,7 @@ def _flags_for_suggestion(
         _append_once(flags, "low_confidence")
     if suggestion.free_text:
         _append_once(flags, "free_text")
-    negation_findings = detect_clinical_negation(suggestion.evidence)
+    negation_findings = detect_clinical_negation(suggestion.evidence or "")
     if has_category(negation_findings, "uncertainty"):
         _append_once(flags, "uncertain_negation")
     if has_category(negation_findings, "historical"):
