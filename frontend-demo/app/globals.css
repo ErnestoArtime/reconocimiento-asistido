@@ -435,7 +435,7 @@ td mark {
 
 .assistantControls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
@@ -456,6 +456,10 @@ td mark {
 
 .controlGroupV2 {
   border-left: 4px solid #7c3aed;
+}
+
+.controlGroupUnified {
+  border-left: 4px solid var(--accent);
 }
 
 .controlGroupHeader {
@@ -545,6 +549,19 @@ td mark {
 
 .v2StatusStrip strong {
   color: #4c1d95;
+}
+
+.testStatusStrip {
+  display: flex;
+  gap: 12px;
+  padding: 0 12px 10px;
+  color: #475569;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.testStatusStrip strong {
+  color: var(--text);
 }
 
 .v2LiveText {

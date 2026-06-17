@@ -320,9 +320,8 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
 
   // streaming en vivo
   const [streaming, setStreaming] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [v1ControlsOpen, setV1ControlsOpen] = useState(true);
-  const [v2ControlsOpen, setV2ControlsOpen] = useState(true);
+  const [audioControlsOpen, setAudioControlsOpen] = useState(true);
+  const [audioTestMode, setAudioTestMode] = useState("live-assist-v1");
   const [streamPartial, setStreamPartial] = useState("");
   const [streamChunks, setStreamChunks] = useState(0);
   const [streamMsgs, setStreamMsgs] = useState(0);
@@ -786,6 +785,15 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             },
             previousEvidenceTurnIds: existing.evidenceTurnIds || [],
           });
+        } else if (next && sameAnswer(existing, next)) {
+          merged.push({
+            ...existing,
+            status: existing.status === "conflict" ? "suggested" : existing.status,
+            riskFlags: (existing.riskFlags || []).filter((flag) => flag !== "conflict"),
+            previousAnswer: undefined,
+            proposedAnswer: undefined,
+            previousEvidenceTurnIds: undefined,
+          });
         } else {
           merged.push(existing);
         }
@@ -1217,26 +1225,49 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
     const wav = pcmChunksToWavBlob(chunks, 16000);
     setRefining(true);
     setRefined(false);
+    const t0 = performance.now();
     try {
-      const data = await transcribeAudio({
+      const data = await transcribeAndExtract({
         audioBlob: wav,
         filename: "stream_full.wav",
+        module,
+        section: "*",
         provider: audioProvider || undefined,
         model: audioModel || undefined,
-        useCache: false,
+        iaProvider: iaProvider || undefined,
+        iaModel: activeIaSupportsModel ? iaModel || undefined : undefined,
       });
-      if (data.text) {
-        setText(data.text);
-        setTranscript(data.text);
+      const tr = data.transcription || {};
+      if (tr.text) {
+        setText(tr.text);
+        setTranscript(tr.text);
         setTranscribeStats({
-          duration_s: data.duration_s,
-          rtf: data.rtf,
-          provider: data.provider,
-          model: data.model,
-          language: data.language,
+          duration_s: tr.duration_s,
+          rtf: tr.rtf,
+          provider: tr.provider,
+          model: tr.model,
+          language: tr.language,
         });
+      }
+      const items = (data.suggestions || []).map((raw) =>
+        adaptSuggestion(raw, data, questionsMap[raw.question_id]),
+      );
+      setSuggestions((current) =>
+        mergeLiveSuggestions(current, items, "suggestions.refined"),
+      );
+      setClinicalSummary(data.clinical_summary || "");
+      setExtractStats({
+        server_ms: data.extract_ms,
+        client_ms: performance.now() - t0,
+        provider_used: data.ia_provider_used || data.quality_report?.provider,
+        model_used: data.ia_model_used || data.quality_report?.model,
+        count: items.length,
+        quality_report: data.quality_report,
+        graph_report: data.graph_report,
+        live_event: "suggestions.refined",
+      });
+      if (tr.text || items.length) {
         setRefined(true);
-        await runFinalReconciliation(data.text);
       }
     } catch (err) {
       setError("Refinamiento fallo: " + (err.message || err));
@@ -1799,13 +1830,29 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
 
         <div className="assistantControls">
           <CollapsibleControlGroup
-            className="controlGroupBase"
-            title="V1 Backend"
-            hint="Transcripcion autoritativa con timestamps"
-            open={v1ControlsOpen}
-            onToggle={() => setV1ControlsOpen((value) => !value)}
+            className="controlGroupUnified"
+            title="Pruebas de audio"
+            hint="Variantes V1 backend y V2 browser en un solo flujo"
+            open={audioControlsOpen}
+            onToggle={() => setAudioControlsOpen((value) => !value)}
           >
             <div className="assistantToolbar" style={{ flexWrap: "wrap", gap: 8 }}>
+          <span className="toolbarSectionLabel">Flujo</span>
+          <select
+            value={audioTestMode}
+            onChange={(e) => setAudioTestMode(e.target.value)}
+            className="select"
+            title="Variante de prueba"
+            disabled={loading || streaming || recording || v2Recording || voskV2Active}
+          >
+            <option value="live-assist-v1">V1 backend: entrevista asistida</option>
+            <option value="live-transcribe-v1">V1 backend: solo transcripcion live</option>
+            <option value="batch-v1">V1 backend: audio batch</option>
+            <option value="browser-whisper-v2">V2 browser: Whisper ONNX</option>
+            <option value="browser-vosk-v2">V2 browser: Vosk live</option>
+            <option value="backend-v2">V2 comparativa: backend + extraer</option>
+          </select>
+          <span className="toolbarSectionLabel">Contexto</span>
           <select
             value={module}
             onChange={(e) => setModule(e.target.value)}
@@ -1859,6 +1906,39 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               ))}
             </select>
           )}
+          {(audioTestMode === "browser-whisper-v2" ||
+            audioTestMode === "backend-v2") && (
+            <select
+              value={v2Model}
+              onChange={(e) => setV2Model(e.target.value)}
+              className="select"
+              title="Modelo Whisper ONNX para transcripcion en browser"
+              disabled={loading || v2Transcribing || v2ModelLoading}
+            >
+              <option value="Xenova/whisper-small">
+                Whisper browser small (~244MB)
+              </option>
+              <option value="Xenova/whisper-large-v3">
+                Whisper browser large-v3 (~1.5GB)
+              </option>
+            </select>
+          )}
+          {audioTestMode === "browser-vosk-v2" && (
+            <select
+              value={voskV2ModelSize}
+              onChange={(e) => setVoskV2ModelSize(e.target.value)}
+              className="select"
+              title="Modelo Vosk para streaming real-time en browser"
+              disabled={loading || voskV2Active || voskV2ModelLoading}
+            >
+              {Object.entries(VOSK_MODELS).map(([key, model]) => (
+                <option key={key} value={key} disabled={model.disabled}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          )}
+          <span className="toolbarSectionLabel">LLM</span>
           <select
             value={iaProvider}
             onChange={(e) => {
@@ -1897,67 +1977,62 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               ))}
             </select>
           )}
-          {!recording ? (
-            <button
-              className="recordButton"
-              onClick={startRecording}
-              disabled={loading}
-            >
-              <Mic size={18} />
-              <span>Grabar V1</span>
-            </button>
-          ) : (
-            <button className="recordButton recording" onClick={stopRecording}>
-              <Square size={18} />
-              <span>Detener V1</span>
-            </button>
+          {audioTestMode === "batch-v1" && (
+            <>
+              {!recording ? (
+                <button
+                  className="recordButton"
+                  onClick={startRecording}
+                  disabled={loading}
+                >
+                  <Mic size={18} />
+                  <span>Grabar</span>
+                </button>
+              ) : (
+                <button className="recordButton recording" onClick={stopRecording}>
+                  <Square size={18} />
+                  <span>Detener</span>
+                </button>
+              )}
+              <label className="primaryButton subtle" style={{ cursor: "pointer" }}>
+                <Upload size={18} />
+                <span>Subir audio</span>
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={handleFile}
+                  style={{ display: "none" }}
+                />
+              </label>
+              <button
+                className="primaryButton subtle"
+                disabled={!audioBlob || loading}
+                onClick={handleTranscribeOnly}
+                title="Solo transcribe audio a texto. Revisa antes de pasar al LLM."
+              >
+                {loading ? (
+                  <Loader2 size={18} className="spin" />
+                ) : (
+                  <FileText size={18} />
+                )}
+                <span>Transcribir</span>
+              </button>
+              <button
+                className="primaryButton"
+                disabled={!audioBlob || loading}
+                onClick={handleTranscribeAndExtract}
+                title="Atajo: transcribe + LLM extrae sugerencias en un paso"
+              >
+                {loading ? (
+                  <Loader2 size={18} className="spin" />
+                ) : (
+                  <Sparkles size={18} />
+                )}
+                <span>Transcribir + extraer</span>
+              </button>
+            </>
           )}
-          <label className="primaryButton subtle" style={{ cursor: "pointer" }}>
-            <Upload size={18} />
-            <span>Subir audio V1</span>
-            <input
-              type="file"
-              accept="audio/*"
-              onChange={handleFile}
-              style={{ display: "none" }}
-            />
-          </label>
-          <button
-            className="primaryButton subtle"
-            disabled={!audioBlob || loading}
-            onClick={handleTranscribeOnly}
-            title="Solo transcribe audio a texto. Revisa antes de pasar al LLM."
-          >
-            {loading ? (
-              <Loader2 size={18} className="spin" />
-            ) : (
-              <FileText size={18} />
-            )}
-            <span>Transcribir V1</span>
-          </button>
-          <button
-            className="primaryButton"
-            disabled={!audioBlob || loading}
-            onClick={handleTranscribeAndExtract}
-            title="Atajo: transcribe + LLM extrae sugerencias en un paso"
-          >
-            {loading ? (
-              <Loader2 size={18} className="spin" />
-            ) : (
-              <Sparkles size={18} />
-            )}
-            <span>Transcribir + Extraer V1</span>
-          </button>
-          <label className="advancedToggle">
-            <input
-              type="checkbox"
-              checked={advancedOpen}
-              onChange={(event) => setAdvancedOpen(event.target.checked)}
-            />
-            <span>Avanzado V1</span>
-          </label>
-          {/* Entrevista en vivo asistida: transcribe + sugiere incrementalmente */}
-          {!streaming ? (
+          {audioTestMode === "live-assist-v1" && (!streaming ? (
             <button
               className="recordButton"
               onClick={() => startStreaming(true)}
@@ -1972,9 +2047,8 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               <Square size={18} />
               <span>Detener entrevista V1</span>
             </button>
-          ) : null}
-          {advancedOpen &&
-            (!streaming ? (
+          ) : null)}
+          {audioTestMode === "live-transcribe-v1" && (!streaming ? (
               <button
                 className="recordButton"
                 onClick={() => startStreaming(false)}
@@ -1990,6 +2064,90 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
                 <span>Detener stream V1</span>
               </button>
             ) : null)}
+          {audioTestMode === "browser-whisper-v2" && (
+            <>
+              {!v2Recording ? (
+                <button
+                  className="recordButton"
+                  onClick={startRecordingV2}
+                  disabled={loading || v2Transcribing}
+                  title="Grabar y transcribir con Whisper ONNX en el navegador"
+                >
+                  <Mic size={18} />
+                  <span>Grabar browser</span>
+                </button>
+              ) : (
+                <button className="recordButton recording" onClick={stopRecordingV2}>
+                  <Square size={18} />
+                  <span>Detener browser</span>
+                </button>
+              )}
+              <button
+                className="primaryButton"
+                disabled={!audioBlob || loading || v2Transcribing}
+                onClick={handleTranscribeAndExtractV2}
+                title="Transcribe con Whisper ONNX en browser + extrae sugerencias"
+              >
+                {v2Transcribing ? (
+                  <Loader2 size={18} className="spin" />
+                ) : (
+                  <Sparkles size={18} />
+                )}
+                <span>Extraer desde browser</span>
+              </button>
+            </>
+          )}
+          {audioTestMode === "backend-v2" && (
+            <button
+              className="primaryButton"
+              disabled={!audioBlob || loading || v2Transcribing}
+              onClick={handleTranscribeBackendAndExtractV2}
+              title="Usa el backend de audio V1 para transcribir y luego extrae sugerencias"
+            >
+              {v2Transcribing ? (
+                <Loader2 size={18} className="spin" />
+              ) : (
+                <Sparkles size={18} />
+              )}
+              <span>Backend + extraer</span>
+            </button>
+          )}
+          {audioTestMode === "browser-vosk-v2" && (
+            <>
+              {!voskV2Active ? (
+                <button
+                  className="recordButton"
+                  onClick={startVoskV2}
+                  disabled={loading || v2Transcribing || v2Recording}
+                  title="Entrevista en vivo con Vosk en browser"
+                >
+                  <Sparkles size={18} />
+                  <span>Iniciar Vosk</span>
+                </button>
+              ) : (
+                <button className="recordButton recording" onClick={stopVoskV2}>
+                  <Square size={18} />
+                  <span>Detener Vosk</span>
+                </button>
+              )}
+              <button
+                className="primaryButton"
+                disabled={
+                  !voskV2Active &&
+                  !(voskV2.finalText || voskV2.interimText).trim()
+                }
+                onClick={handleVoskV2TranscribeAndExtract}
+                title="Enviar texto acumulado de Vosk al backend LLM"
+              >
+                {loading ? (
+                  <Loader2 size={18} className="spin" />
+                ) : (
+                  <Sparkles size={18} />
+                )}
+                <span>Extraer Vosk</span>
+              </button>
+            </>
+          )}
           <button
             className="primaryButton subtle"
             disabled={
@@ -2012,134 +2170,12 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
             <span>Limpiar</span>
           </button>
             </div>
-          </CollapsibleControlGroup>
-
-          <CollapsibleControlGroup
-            className="controlGroupV2"
-            title="V2 Browser"
-            hint="Preview offline sin timestamps clinicos"
-            open={v2ControlsOpen}
-            onToggle={() => setV2ControlsOpen((value) => !value)}
-          >
-            <div className="assistantToolbarV2">
-
-          <span className="toolbarSectionLabel" style={{ background: "#e0e7ff", color: "#4338ca" }}>
-            Modelo Whisper V2
-          </span>
-          <select
-            value={v2Model}
-            onChange={(e) => setV2Model(e.target.value)}
-            className="select"
-            title="Modelo Whisper ONNX para transcripcion en browser (V2)"
-            disabled={loading || v2Transcribing || v2ModelLoading}
-          >
-            <option value="Xenova/whisper-small">
-              whisper-small (~244MB, rapido)
-            </option>
-            <option value="Xenova/whisper-large-v3">
-              whisper-large-v3 (~1.5GB, preciso)
-            </option>
-          </select>
-          {!v2Recording ? (
-            <button
-              className="recordButton"
-              onClick={startRecordingV2}
-              disabled={loading || v2Transcribing}
-              title="Grabar y transcribir con Whisper ONNX en el navegador (sin servidor)"
-            >
-              <Mic size={18} />
-              <span>Grabar V2</span>
-            </button>
-          ) : (
-            <button className="recordButton recording" onClick={stopRecordingV2}>
-              <Square size={18} />
-              <span>Detener V2</span>
-            </button>
-          )}
-          <button
-            className="primaryButton"
-            disabled={!audioBlob || loading || v2Transcribing}
-            onClick={handleTranscribeAndExtractV2}
-            title="Transcribe con Whisper ONNX en browser + extrae sugerencias con backend LLM"
-          >
-            {v2Transcribing ? (
-              <Loader2 size={18} className="spin" />
-            ) : (
-              <Sparkles size={18} />
-            )}
-            <span>Transcribir + Extraer V2</span>
-          </button>
-          <button
-            className="primaryButton subtle"
-            disabled={!audioBlob || loading || v2Transcribing}
-            onClick={handleTranscribeBackendAndExtractV2}
-            title="Usa el backend de audio V1 para transcribir con Whisper/faster-whisper/WhisperX y luego extrae sugerencias"
-          >
-            {v2Transcribing ? (
-              <Loader2 size={18} className="spin" />
-            ) : (
-              <Sparkles size={18} />
-            )}
-            <span>Backend + Extraer V2</span>
-          </button>
-
-          <div className="toolbarDivider" />
-
-          <span className="toolbarSectionLabel" style={{ background: "#fce7f3", color: "#be185d" }}>
-            Modelo Vosk V2
-          </span>
-          <select
-            value={voskV2ModelSize}
-            onChange={(e) => setVoskV2ModelSize(e.target.value)}
-            className="select"
-            title="Modelo Vosk para streaming real-time en browser (V2)"
-            disabled={loading || voskV2Active || voskV2ModelLoading}
-          >
-            {Object.entries(VOSK_MODELS).map(([key, model]) => (
-              <option key={key} value={key} disabled={model.disabled}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-          {!voskV2Active ? (
-            <button
-              className="recordButton"
-              onClick={startVoskV2}
-              disabled={loading || v2Transcribing || v2Recording}
-              title="Entrevista en vivo con Vosk: transcripcion real-time en el navegador"
-            >
-              <Sparkles size={18} />
-              <span>Entrevista V2</span>
-            </button>
-          ) : (
-            <button
-              className="recordButton recording"
-              onClick={stopVoskV2}
-            >
-              <Square size={18} />
-              <span>Detener V2</span>
-            </button>
-          )}
-          <button
-            className="primaryButton"
-            disabled={
-              !voskV2Active &&
-              !(voskV2.finalText || voskV2.interimText).trim()
-            }
-            onClick={handleVoskV2TranscribeAndExtract}
-            title="Enviar texto acumulado de Vosk al backend LLM para extraer sugerencias"
-          >
-            {loading ? (
-              <Loader2 size={18} className="spin" />
-            ) : (
-              <Sparkles size={18} />
-            )}
-            <span>Extraer V2</span>
-          </button>
-            </div>
-            <div className="v2StatusStrip">
+            <div className="testStatusStrip">
               <span>
-                Whisper V2:{" "}
+                Flujo: <strong>{audioTestMode}</strong>
+              </span>
+              <span>
+                Whisper browser:{" "}
                 <strong>
                   {v2ModelLoading
                     ? `cargando ${transcriberV2.loadProgress > 0 ? `${Math.round(transcriberV2.loadProgress * 100)}%` : ""}`
@@ -2149,7 +2185,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
                 </strong>
               </span>
               <span>
-                Vosk V2:{" "}
+                Vosk:{" "}
                 <strong>
                   {voskV2ModelLoading
                     ? `cargando ${voskV2ModelSize}`
@@ -2160,7 +2196,7 @@ function AssistantPanel({ accepted, existingRows, onClose, onAccept }) {
               </span>
               {(voskV2.finalText || voskV2.interimText) && (
                 <span className="v2LiveText">
-                  Live V2:{" "}
+                  Live browser:{" "}
                   <strong>
                     {[voskV2.finalText, voskV2.interimText]
                       .filter(Boolean)
